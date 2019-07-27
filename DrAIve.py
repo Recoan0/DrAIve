@@ -1,13 +1,18 @@
 import pygame
+import numpy as np
 import os
 
 from pygame.math import Vector2
-from math import tan, radians, degrees, copysign, floor
+from math import sin, cos, tan, radians, degrees, copysign, floor
+
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+RED = (255, 0, 0)
 
 
 class Car:
-    def __init__(self, x, y, scale, angle=0.0, length=4, max_steering=50, max_acceleration=20.0,
-                 acceleration_speed=20.0, steering_speed=80, brake_deceleration=40.0, top_speed=20, drag=5, grip=10):
+    def __init__(self, x, y, scale, angle=0.0, length=4, max_steering=50, max_acceleration=40.0,
+                 acceleration_speed=20.0, steering_speed=80, brake_deceleration=40.0, top_speed=20, drag=5):
         self.position = Vector2(x, y)
         self.velocity = Vector2(0.0, 0.0)
         self.angle = angle
@@ -19,17 +24,12 @@ class Car:
         self.brake_deceleration = brake_deceleration
         self.top_speed = top_speed
         self.drag = drag
-        self.grip = grip
 
         self.acceleration = 0.0
         self.steering = 0.0
 
     def update(self, dt):
         self.velocity += (self.acceleration * dt, 0)
-        self.velocity.y = copysign(max(self.velocity.y, self.steering / 2 * self.velocity.x), self.velocity.y)
-
-        # Apply grip
-        self.velocity.y = -copysign(min(abs(self.velocity.y), self.grip), self.velocity.y) / 2
 
         # Clamp velocity
         self.velocity.x = max(-self.top_speed, min(self.velocity.x, self.top_speed))
@@ -101,6 +101,44 @@ def keys_to_choice(pressed):
             return 4
 
 
+def get_track_lines():
+    lines = []
+    lines.append(((100, 100), (700, 700)))
+    return lines
+
+
+def calc_intersect(line1, line2):
+    x1, y1 = line1[0]
+    x2, y2 = line1[1]
+    x3, y3 = line2[0]
+    x4, y4 = line2[1]
+    if (x4 - x3) * (y1 - y2) - (x1 - x2) * (y4 - y3) == 0:
+        return None
+    t1 = ((y3 - y4) * (x1 - x3) + (x4 - x3) * (y1 - y3))/((x4 - x3) * (y1 - y2) - (x1 - x2) * (y4 - y3))
+    t2 = ((y1 - y2) * (x1 - x3) + (x2 - x1) * (y1 - y3))/((x4 - x3) * (y1 - y2) - (x1 - x2) * (y4 - y3))
+
+    if 0 <= t1 <= 1 and 0 <= t2 <= 1:
+        return line1[0] + np.multiply(t1, tuple(np.subtract(line1[1], line1[0])))
+    else:
+        return None
+
+
+def vision_lines(car, ppu, car_length, car_width):
+    line_length = 400
+    lines = []
+    front_offset = (cos(radians(-car.angle)) * car_length / 2, sin(radians(-car.angle)) * car_length / 2)
+    front_line = (np.multiply(car.position, ppu) + front_offset,
+                  np.multiply(car.position, ppu) + (cos(radians(-car.angle))*line_length,
+                                                    sin(radians(-car.angle)) * line_length) + front_offset)
+    rear_line = (np.multiply(car.position, ppu) - front_offset,
+                 np.multiply(car.position, ppu) - (cos(radians(-car.angle))*line_length,
+                                                   sin(radians(-car.angle)) * line_length) - front_offset)
+    
+    lines.append(front_line)
+    lines.append(rear_line)
+    return lines
+
+
 class Game:
     DISPLAY_WIDTH = 1920
     DISPLAY_HEIGHT = 1080
@@ -119,11 +157,13 @@ class Game:
         car_image = pygame.image.load(image_path)
         car_scale = 0.5
 
-        new_car_image_size = floor(car_image.get_rect().size[0] * car_scale), \
-                             floor(car_image.get_rect().size[1] * car_scale)
+        new_car_image_size = (floor(car_image.get_rect().size[0] * car_scale),
+                              floor(car_image.get_rect().size[1] * car_scale))
         car_image = pygame.transform.scale(car_image, new_car_image_size)
         car = Car(0, 0, car_scale)
         ppu = 32 / car_scale
+
+        track_lines = get_track_lines()
 
         while not self.exit:
             dt = self.clock.get_time() / 1000
@@ -138,10 +178,15 @@ class Game:
             input_to_car(car, keys_to_choice(pressed), dt)
             car.update(dt)
 
-            self.screen.fill((0, 0, 0))
+            self.screen.fill(BLACK)
             rotated = pygame.transform.rotate(car_image, car.angle)
             rect = rotated.get_rect()
             self.screen.blit(rotated, car.position * ppu - (rect.width / 2, rect.height / 2))
+            for line in track_lines:
+                pygame.draw.line(self.screen, WHITE, line[0], line[1], 5)
+            for line in vision_lines(car, ppu, max(rect.width, rect.height), min(rect.width, rect.height)):
+                pygame.draw.line(self.screen, WHITE, line[0], line[1], 2)
+            print(calc_intersect(track_lines[0], vision_lines(car, ppu, rect.width, rect.height)[0]))
             pygame.display.update()
             self.clock.tick(self.ticks)
         pygame.quit()
