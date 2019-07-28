@@ -118,6 +118,7 @@ class Track:
 
     def generate_track_lines(self):
         self.lines.append(((100, 100), (700, 700)))
+        self.lines.append(((100, 200), (700, 800)))
 
 
 class Game:
@@ -166,13 +167,16 @@ class Game:
                 pygame.draw.line(self.screen, WHITE, line[0], line[1], 5)
             for line in car.vision_lines():
                 pygame.draw.line(self.screen, WHITE, line[0], line[1])
+                vision_point = get_closest_vision_intersection(line, track)
+                if vision_point is not None:
+                    integer_point = (int(vision_point[0]), int(vision_point[1]))
+                    pygame.draw.circle(self.screen, RED, integer_point, 10)
             for line in car.hitbox_lines():
                 pygame.draw.line(self.screen, WHITE, line[0], line[1])
 
             rotated = pygame.transform.rotate(car_image, car.angle)
             rect = rotated.get_rect()
             self.screen.blit(rotated, car.position * ppu - (rect.width / 2, rect.height / 2))
-            print(car_hit_wall(car, track))
             pygame.display.update()
             self.clock.tick(self.ticks)
         pygame.quit()
@@ -265,6 +269,8 @@ def get_closest_vision_intersection(vision_line, track):
         collision_location = calc_intersect(vision_line, track_line)
         if collision_location is not None:
             collisions.append(collision_location)
+    if len(collisions) == 0:
+        return None
     return reduce((lambda x, y: min_distance_point(vision_line, x, y)), collisions)
 
 
