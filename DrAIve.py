@@ -576,7 +576,7 @@ class DQNAgent:
 
 
 class QTrainer:
-    TRACK_AMOUNT = 1
+    TRACK_AMOUNT = 5
 
     # These need to remain the same after AI has started training
     GATE_REWARD = 100
