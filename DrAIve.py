@@ -1,5 +1,6 @@
 import pygame
 import numpy as np
+import random
 import os
 
 from pygame.math import Vector2
@@ -9,6 +10,7 @@ from functools import reduce
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 RED = (255, 0, 0)
+GREEN = (0, 255, 0)
 
 VISION_LINE_LENGTH = 400
 
@@ -37,6 +39,7 @@ class Car:
 
         self.acceleration = 0.0
         self.steering = 0.0
+        self.current_reward_gate = 0
 
     def update(self, dt):
         self.velocity += (self.acceleration * dt, 0)
@@ -151,96 +154,54 @@ class Car:
                 distances.append(1)
         return distances
 
+    def hit_wall(self, current_track):
+        for hit_line in self.hitbox_lines():
+            for track_line in current_track.get_walls():
+                if calc_intersect(hit_line, track_line) is not None:
+                    return True
+        return False
+
+    def hit_reward_gate(self, current_track):
+        for hit_line in self.hitbox_lines():
+            if calc_intersect(hit_line, current_track.get_reward_gates()[self.current_reward_gate]) is not None:
+                return True
+        return False
+
 
 class Track:
     def __init__(self):
-        self.lines = []
+        self.walls = []
+        self.reward_gates = []
         self.car_start_location = None
         self.car_start_angle = None
 
-    def get_lines(self):
-        return self.lines
+    def get_walls(self):
+        return self.walls
 
-    def add_line(self, line):
-        self.lines.append(line)
+    def get_reward_gates(self):
+        return self.reward_gates
 
-    def generate_track_lines(self):
-        self.lines.append(((100, 100), (700, 700)))
-        self.lines.append(((100, 200), (700, 800)))
+    def add_wall(self, line):
+        self.walls.append(line)
+
+    def add_reward_gate(self, gate):
+        self.reward_gates.append(gate)
 
     def set_car_start(self, location, angle):
         self.car_start_location = location
         self.car_start_angle = angle
 
 
-class Game:
-    def __init__(self, current_track):
-        pygame.init()
-        pygame.display.set_caption('DrAIve')
-        self.screen = pygame.display.set_mode((DISPLAY_WIDTH, DISPLAY_HEIGHT))
-        self.clock = pygame.time.Clock()
-        self.ticks = 60
-        self.exit = False
-        self.track = current_track
-
-    def run(self):
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        image_path = os.path.join(current_dir, "car.png")
-        car_image = pygame.image.load(image_path)
-        car_scale = 0.3
-
-        new_car_image_size = (floor(car_image.get_rect().size[0] * car_scale),
-                              floor(car_image.get_rect().size[1] * car_scale))
-        car_image = pygame.transform.scale(car_image, new_car_image_size)
-        ppu = 32 / car_scale
-        car = Car(self.track.car_start_location[0] / ppu, self.track.car_start_location[1] / ppu,
-                  car_scale, ppu, car_image, self.track.car_start_angle)
-
-        while not self.exit:
-            dt = self.clock.get_time() / 1000
-
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.exit = True
-
-            pressed = pygame.key.get_pressed()
-
-            car.send_input(keys_to_choice(pressed), dt)
-            car.update(dt)
-
-            self.screen.fill(BLACK)
-
-            for line in self.track.get_lines():
-                pygame.draw.line(self.screen, WHITE, line[0], line[1], 3)
-            for line in car.vision_lines():
-                pygame.draw.line(self.screen, WHITE, line[0], line[1])
-                vision_point = get_closest_vision_intersection(line, self.track)
-                if vision_point is not None:
-                    integer_point = (int(vision_point[0]), int(vision_point[1]))
-                    pygame.draw.circle(self.screen, RED, integer_point, 8)
-            for line in car.hitbox_lines():
-                pygame.draw.line(self.screen, WHITE, line[0], line[1])
-
-            rotated = pygame.transform.rotate(car_image, car.angle)
-            rect = rotated.get_rect()
-            self.screen.blit(rotated, car.position * ppu - (rect.width / 2, rect.height / 2))
-            pygame.display.update()
-            self.clock.tick(self.ticks)
-        pygame.quit()
-
-
 class TrackEditor:
-    def __init__(self, edit_track):
-        pygame.init()
+    def __init__(self, screen):
         pygame.display.set_caption('Level Editor')
-        self.screen = pygame.display.set_mode((DISPLAY_WIDTH, DISPLAY_HEIGHT))
-        self.clock = pygame.time.Clock()
+        self.screen = screen
         self.ticks = 60
         self.exit = False
-        self.track = edit_track
         self.direction_arrow_size = 80
 
-    def run(self):
+    def run(self, clock):
+        edit_track = Track()
         stage = 0
         current_line = None
         first_line = None
@@ -255,32 +216,41 @@ class TrackEditor:
             pressed = pygame.key.get_pressed()
             if pressed[pygame.K_n]:
                 if move_next:
+                    if stage == 2:  # Add finish line to track
+                        edit_track.add_reward_gate(edit_track.get_reward_gates()[0])
                     stage += 1
                     move_next = False
             else:
                 move_next = True
 
             self.screen.fill(BLACK)
-            for line in self.track.get_lines():
+            for line in edit_track.get_walls():
                 pygame.draw.line(self.screen, WHITE, line[0], line[1], 5)
-            if current_line is not None:
-                pygame.draw.line(self.screen, WHITE, current_line[0], current_line[1], 5)
+            for line in edit_track.get_reward_gates():
+                pygame.draw.line(self.screen, GREEN, line[0], line[1], 3)
 
             if stage == 0:
-                current_line, first_line = self.add_lines(current_line, first_line, ev, pressed)
+                current_line, first_line = self.add_walls(current_line, first_line, ev, pressed, edit_track)
+                if current_line is not None:
+                    pygame.draw.line(self.screen, WHITE, current_line[0], current_line[1], 5)
             elif stage == 1:
-                stage += self.set_start_point_and_angle(ev)
-            elif stage >= 2:
+                stage += self.set_start_point_and_angle(ev, edit_track)
+            elif stage == 2:
+                current_line = self.add_reward_gates(current_line, ev, edit_track)
+                if current_line is not None:
+                    pygame.draw.line(self.screen, GREEN, current_line[0], current_line[1], 3)
+            elif stage >= 3:
                 if pressed[pygame.K_q]:
                     self.exit = True
 
-            self.draw_start()
+            self.draw_start(edit_track)
 
             pygame.display.update()
-            self.clock.tick(self.ticks)
-        pygame.quit()
+            clock.tick(self.ticks)
+        return edit_track
 
-    def add_lines(self, current_line, first_line, events, keys_pressed):
+    @staticmethod
+    def add_walls(current_line, first_line, events, keys_pressed, edit_track):
         if current_line is not None:
             current_line = (current_line[0], pygame.mouse.get_pos())
         for event in events:
@@ -289,34 +259,184 @@ class TrackEditor:
                     current_line = (pygame.mouse.get_pos(), pygame.mouse.get_pos())
                     first_line = current_line
                 else:
-                    self.track.add_line((current_line[0], pygame.mouse.get_pos()))
+                    edit_track.add_wall((current_line[0], pygame.mouse.get_pos()))
                     current_line = (pygame.mouse.get_pos(), pygame.mouse.get_pos())
 
         if keys_pressed[pygame.K_f] and current_line is not None:
-            self.track.add_line((current_line[0], first_line[0]))
+            edit_track.add_wall((current_line[0], first_line[0]))
             current_line = None
             first_line = None
 
         return current_line, first_line
 
-    def set_start_point_and_angle(self, events):
+    @staticmethod
+    def set_start_point_and_angle(events, edit_track):
         for event in events:
             if event.type == pygame.MOUSEBUTTONDOWN:
                 print("Setting start location")
-                self.track.car_start_location = pygame.mouse.get_pos()
+                edit_track.car_start_location = pygame.mouse.get_pos()
+                print(edit_track.car_start_location)
             elif event.type == pygame.MOUSEBUTTONUP:
-                self.track.car_start_angle = -angle_between(self.track.car_start_location, pygame.mouse.get_pos())
+                edit_track.car_start_angle = -angle_between(edit_track.car_start_location, pygame.mouse.get_pos())
                 return 1
         return 0
 
-    def draw_start(self):
-        if self.track.car_start_location is not None:
-            pygame.draw.circle(self.screen, RED, self.track.car_start_location, 8)
-        if self.track.car_start_angle is not None:
-            pygame.draw.line(self.screen, WHITE, self.track.car_start_location,
-                             np.add(self.track.car_start_location,
-                                    (cos(radians(self.track.car_start_angle)) * self.direction_arrow_size,
-                                     -sin(radians(self.track.car_start_angle)) * self.direction_arrow_size)), 5)
+    @staticmethod
+    def add_reward_gates(current_line, events, edit_track):
+        if current_line is not None:
+            current_line = (current_line[0], pygame.mouse.get_pos())
+        for event in events:
+            if event.type == pygame.MOUSEBUTTONUP:
+                if current_line is None:
+                    current_line = (pygame.mouse.get_pos(), pygame.mouse.get_pos())
+                else:
+                    edit_track.add_reward_gate((current_line[0], pygame.mouse.get_pos()))
+                    current_line = None
+
+        return current_line
+
+    def draw_start(self, edit_track):
+        if edit_track.car_start_location is not None:
+            pygame.draw.circle(self.screen, RED, edit_track.car_start_location, 8)
+        if edit_track.car_start_angle is not None:
+            pygame.draw.line(self.screen, WHITE, edit_track.car_start_location,
+                             np.add(edit_track.car_start_location,
+                                    (cos(radians(edit_track.car_start_angle)) * self.direction_arrow_size,
+                                     -sin(radians(edit_track.car_start_angle)) * self.direction_arrow_size)), 5)
+
+
+class Game:
+    def __init__(self, screen, gate_reward, finish_reward, crash_punishment, fuel_cost):
+        self.screen = screen
+        self.ticks = 60
+        self.keep_going = True
+        self.gate_reward = gate_reward
+        self.finish_reward = finish_reward
+        self.crash_punishment = crash_punishment
+        self.fuel_cost = fuel_cost
+        self.car = None
+
+    def run(self, clock, current_track, show_screen):
+        toggled = False
+        show_screen_every = 5000
+        show_time = 0
+
+        exit_game = False
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        image_path = os.path.join(current_dir, "car.png")
+        car_image = pygame.image.load(image_path)
+        car_scale = 0.3
+
+        new_car_image_size = (floor(car_image.get_rect().size[0] * car_scale),
+                              floor(car_image.get_rect().size[1] * car_scale))
+        car_image = pygame.transform.scale(car_image, new_car_image_size)
+        ppu = 32 / car_scale
+        self.car = Car(current_track.car_start_location[0] / ppu, current_track.car_start_location[1] / ppu,
+                       car_scale, ppu, car_image, current_track.car_start_angle)
+
+        while not exit_game:
+            if show_screen:
+                dt = clock.get_time() / 1000
+            else:
+                dt = 1 / self.ticks  # Standard delta time for running more fps but setting movement to same delta
+
+            pressed = pygame.key.get_pressed()
+            if pressed[pygame.K_d]:
+                if not toggled:
+                    show_screen = not show_screen
+                    toggled = True
+            else:
+                toggled = False
+
+            self.car.send_input(keys_to_choice(pressed), dt)
+            self.car.update(dt)
+
+            self.screen.fill(BLACK)
+
+            for line in current_track.get_walls():
+                pygame.draw.line(self.screen, WHITE, line[0], line[1], 3)
+            for line in current_track.get_reward_gates():
+                pygame.draw.line(self.screen, GREEN, line[0], line[1], 3)
+            for line in self.car.vision_lines():
+                pygame.draw.line(self.screen, WHITE, line[0], line[1])
+                vision_point = get_closest_vision_intersection(line, current_track)
+                if vision_point is not None:
+                    integer_point = (int(vision_point[0]), int(vision_point[1]))
+                    pygame.draw.circle(self.screen, RED, integer_point, 8)
+            for line in self.car.hitbox_lines():
+                pygame.draw.line(self.screen, WHITE, line[0], line[1])
+
+            points, exit_game = self.rate_action(self.car, current_track)
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    exit_game = True
+                    self.keep_going = False
+
+            rotated = pygame.transform.rotate(car_image, self.car.angle)
+            rect = rotated.get_rect()
+            self.screen.blit(rotated, self.car.position * ppu - (rect.width / 2, rect.height / 2))
+            if show_screen:
+                pygame.display.update()
+                clock.tick(self.ticks)
+            else:
+                clock.tick()
+                show_time += clock.get_time()
+                if show_time > show_screen_every:
+                    rect = self.screen.blit(pygame.font.SysFont('Comic Sans MS', 25)
+                                            .render(f"Rendering in quick mode with {1000 / clock.get_time()}fps",
+                                                    False, WHITE), (10, 10))
+                    pygame.display.update(rect)
+                    print(f"{1000 / clock.get_time()}fps")
+                    show_time = 0
+        return self.keep_going
+
+    def rate_action(self, car, current_track):  # Returns score and whether the level should be reset
+        if car.hit_wall(current_track):
+            return self.crash_punishment, True
+        elif car.hit_reward_gate(current_track):
+            car.current_reward_gate += 1
+            if car.current_reward_gate % len(current_track.get_reward_gates()) == 0:
+                return self.finish_reward, True
+            return self.gate_reward, False
+        else:
+            return self.fuel_cost, False
+
+
+class QTrainer:
+    TRACK_AMOUNT = 1
+
+    # These need to remain the same after AI has started training
+    GATE_REWARD = 100
+    FINISH_REWARD = 1000
+    CRASH_PUNISHMENT = -1000
+    FUEL_COST = 0
+
+    SHOW_EVERY = 25
+
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((DISPLAY_WIDTH, DISPLAY_HEIGHT))
+        self.clock = pygame.time.Clock()
+        self.tracks = []
+
+    def run(self):
+        game_number = 0
+        self.generate_tracks(self.TRACK_AMOUNT)
+
+        pygame.display.set_caption('DrAIve')
+        game = Game(self.screen, self.GATE_REWARD, self.FINISH_REWARD, self.CRASH_PUNISHMENT, self.FUEL_COST)
+
+        run = True
+        while run:
+            run = game.run(self.clock, random.choice(self.tracks), game_number % self.SHOW_EVERY == 0)
+            game_number += 1
+
+        pygame.quit()
+
+    def generate_tracks(self, amount):
+        for i in range(amount):
+            self.tracks.append(TrackEditor(self.screen).run(self.clock))
 
 
 def keys_to_choice(pressed):
@@ -372,7 +492,7 @@ def calc_intersect(line1, line2):
 
 def get_closest_vision_intersection(vision_line, vision_track):
     collisions = []
-    for track_line in vision_track.get_lines():
+    for track_line in vision_track.get_walls():
         collision_location = calc_intersect(vision_line, track_line)
         if collision_location is not None:
             collisions.append(collision_location)
@@ -381,22 +501,10 @@ def get_closest_vision_intersection(vision_line, vision_track):
     return reduce((lambda x, y: min_distance_point(vision_line, x, y)), collisions)
 
 
-def car_hit_wall(car, current_track):
-    for hit_line in car.hitbox_lines():
-        for track_line in current_track.get_lines():
-            if calc_intersect(hit_line, track_line) is not None:
-                return True
-    return False
-
-
 def angle_between(point1, point2):
     dx = point2[0] - point1[0]
     dy = point2[1] - point1[1]
     return degrees(atan2(dy, dx))
 
 
-track = Track()
-track_editor = TrackEditor(track)
-track_editor.run()
-game = Game(track)
-game.run()
+QTrainer().run()
