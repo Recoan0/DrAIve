@@ -23,8 +23,8 @@ GREEN = (0, 255, 0)
 class Car:
     VISION_LINE_LENGTH = 400
 
-    def __init__(self, x, y, scale, ppu, image, angle=0.0, length=4, max_steering=50, max_acceleration=40.0,
-                 acceleration_speed=20.0, steering_speed=80, brake_deceleration=40.0, top_speed=20, drag=5):
+    def __init__(self, x, y, scale, ppu, image, angle=0.0, length=4, max_steering=45, max_acceleration=40.0,
+                 acceleration_speed=15.0, steering_speed=60, brake_deceleration=20.0, top_speed=8, drag=5):
         self.position = Vector2(x, y)
         self.velocity = Vector2(0.0, 0.0)
         self.angle = angle
@@ -68,12 +68,12 @@ class Car:
             if self.velocity.x < 0:
                 self.acceleration = self.brake_deceleration
             else:
-                self.acceleration += self.acceleration_speed * dt
+                self.acceleration = self.acceleration_speed
         elif choice in (6, 7, 8):
             if self.velocity.x > 0:
                 self.acceleration = -self.brake_deceleration
             else:
-                self.acceleration -= self.acceleration_speed * dt
+                self.acceleration = -self.acceleration_speed * 0.5
         else:
             self.acceleration = -copysign(self.drag, self.velocity.x)
 
@@ -196,6 +196,17 @@ class Track:
     def set_car_start(self, location, angle):
         self.car_start_location = location
         self.car_start_angle = angle
+
+    def __str__(self):
+        return_string = "walls: "
+        for wall in self.get_walls():
+            return_string += wall.__str__() + " "
+        return_string += "\ngates: "
+        for gate in self.get_reward_gates():
+            return_string += gate.__str__() + " "
+        return_string += "\nstart_location: " + self.car_start_location.__str__()
+        return_string += "\nstart_angle: " + self.car_start_angle.__str__()
+        return return_string
 
 
 class TrackEditor:
@@ -440,7 +451,6 @@ class Game:
     def build_state(car, track):
         state = () + tuple(car.get_vision_distances(track)) + \
                 (normalize_angle(car.angle),) + tuple(component / car.top_speed for component in car.velocity)
-        print(len(state))
         return state
 
 
@@ -518,7 +528,7 @@ class DQNAgent:
         self.replay_memory.append(transition)
 
     def get_qs(self, state):
-        return self.model.predict(np.array(state).reshape(-1, *state.shape) / 255)[0]
+        return self.model.predict(np.array(state).reshape(-1, *(13,)))[0]
 
     def decay_epsilon(self):
         if self.epsilon > self.MIN_EPSILON:
@@ -553,7 +563,7 @@ class DQNAgent:
             X.append(current_state)
             y.append(current_qs)
 
-        self.model.fit(np.array(X) / 255, np.array(y), batch_size=self.MINIBATCH_SIZE, verbose=0,
+        self.model.fit(np.array(X), np.array(y), batch_size=self.MINIBATCH_SIZE, verbose=0,
                        shuffle=False, callbacks=[self.tensor_board] if terminal_state else None)
 
         # updating to determine if we want to update target_model yet
@@ -594,6 +604,12 @@ class QTrainer:
         game_rewards = []
         self.generate_tracks(self.TRACK_AMOUNT)
 
+        track_string = ""
+        for track in self.tracks:
+            track_string += track.__str__() + "\n\n"
+        with open(f"Tracks_{int(time.time())}.txt", "w") as text_file:
+            print(track_string, file=text_file)
+
         pygame.display.set_caption('DrAIve')
         game = Game(self.screen, self.GATE_REWARD, self.FINISH_REWARD, self.CRASH_PUNISHMENT, self.FUEL_COST)
 
@@ -601,7 +617,7 @@ class QTrainer:
         while run:
             self.agent.tensor_board.step = game_number
             run, game_reward = game.run(self.agent, self.clock, random.choice(self.tracks),
-                                        game_number % self.SHOW_EVERY == 0)
+                                        game_number % self.SHOW_EVERY == 1)
             game_number += 1
 
             # Append game reward to a list and log stats (every given number of games)
@@ -618,7 +634,7 @@ class QTrainer:
                 # Save model, but only when min reward is greater or equal a set value
                 if min_reward >= self.MIN_REWARD:
                     self.agent.model.save(
-                        f'models/{self.MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
+                        f'models/{self.agent.MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
 
             # Decay epsilon
             self.agent.decay_epsilon()
@@ -729,5 +745,5 @@ tf.compat.v1.set_random_seed(1)
 if not os.path.isdir('models'):
     os.makedirs('models')
 
-# QTrainer().run()  # Run with AI!
-ManualPlayer().run(False)  # Run with manual play!
+QTrainer().run()  # Run with AI!
+# ManualPlayer().run(False)  # Run with manual play!
