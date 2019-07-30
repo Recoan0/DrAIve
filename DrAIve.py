@@ -328,16 +328,21 @@ class Game:
     ACTION_SPACE_SIZE = 9  # 9 different input possibilities
     TICKS = 60
 
-    def __init__(self, screen, gate_reward, finish_reward, crash_punishment, fuel_cost):
+    def __init__(self, agent, screen, clock, gate_reward, finish_reward,
+                 crash_punishment, fuel_cost, max_stalling_without_reward_gate):
+        self.agent = agent
         self.screen = screen
+        self.clock = clock
         self.keep_going = True
         self.gate_reward = gate_reward
         self.finish_reward = finish_reward
         self.crash_punishment = crash_punishment
         self.fuel_cost = fuel_cost
+        self.max_stalling_without_reward_gate = max_stalling_without_reward_gate
 
-    def run(self, agent, clock, current_track, show_screen):
-        toggled = False
+    def run(self, current_track, show_screen, show_screen_forced):
+        toggle_show = False
+        toggle_pause = False
         show_screen_every = 5000
         show_time = 0
 
@@ -356,25 +361,34 @@ class Game:
 
         current_state = self.build_state(car, current_track)
         game_score = 0
+        reward = None
+        ticks_without_passing_gate = 0
 
         while not exit_game:
-            if show_screen:
-                dt = clock.get_time() / 1000
+            if show_screen_forced:
+                dt = self.clock.get_time() / 1000
             else:
                 dt = 1 / self.TICKS  # Standard delta time for running more fps but setting movement to same delta
 
             pressed = pygame.key.get_pressed()
             if pressed[pygame.K_d]:
-                if not toggled:
-                    show_screen = not show_screen
-                    toggled = True
+                if not toggle_show:
+                    show_screen_forced = not show_screen_forced
+                    toggle_show = True
             else:
-                toggled = False
+                toggle_show = False
 
-            if agent is not None:
+            if pressed[pygame.K_p]:
+                if not toggle_pause:
+                    pygame.time.wait(5000)
+                    toggle_pause = True
+            else:
+                toggle_pause = False
+
+            if self.agent is not None:
                 ### AI ###
-                if np.random.random() > agent.epsilon:
-                    action = np.argmax(agent.get_qs(current_state))
+                if np.random.random() > self.agent.epsilon:
+                    action = np.argmax(self.agent.get_qs(current_state))
                 else:
                     action = np.random.randint(0, self.ACTION_SPACE_SIZE)
                 car.send_input(action, dt)
@@ -387,12 +401,17 @@ class Game:
             car.update(dt)
             reward, exit_game = self.rate_action(car, current_track)
 
-            if agent is not None:
+            if self.agent is not None:
                 ### AI ###
+                if reward != self.gate_reward:
+                    ticks_without_passing_gate += dt
+                    if ticks_without_passing_gate > self.max_stalling_without_reward_gate:
+                        reward = self.crash_punishment
+                        exit_game = True
                 game_score += reward
                 new_state = self.build_state(car, current_track)
-                agent.update_replay_memory((current_state, action, reward, new_state, exit_game))
-                agent.train(exit_game)
+                self.agent.update_replay_memory((current_state, action, reward, new_state, exit_game))
+                self.agent.train(exit_game)
                 current_state = new_state
                 ##########
 
@@ -401,22 +420,22 @@ class Game:
                     exit_game = True
                     self.keep_going = False
 
-            if show_screen:
+            if show_screen_forced or show_screen:
                 self.draw_screen(car, current_track, car_image, ppu)
                 pygame.display.update()
-                clock.tick(self.TICKS)
+                self.clock.tick(self.TICKS)
             else:
-                clock.tick()
-                show_time += clock.get_time()
+                self.clock.tick()
+                show_time += self.clock.get_time()
                 if show_time > show_screen_every:
                     self.screen.fill(BLACK)
                     rect = self.screen.blit(pygame.font.SysFont('Comic Sans MS', 25)
-                                            .render(f"Rendering in quick mode with {1000 / clock.get_time()}fps",
+                                            .render(f"Rendering in quick mode with {1000 / self.clock.get_time()}fps",
                                                     False, WHITE), (10, 10))
                     pygame.display.update(rect)
-                    print(f"{1000 / clock.get_time()}fps")
+                    # print(f"{1000 / clock.get_time()}fps")
                     show_time = 0
-        return self.keep_going, game_score
+        return self.keep_going, game_score, reward, show_screen_forced
 
     def rate_action(self, car, current_track):  # Returns score and whether the level should be reset
         if car.hit_wall(current_track):
@@ -448,9 +467,9 @@ class Game:
         self.screen.blit(rotated, car.position * ppu - (rect.width / 2, rect.height / 2))
 
     @staticmethod
-    def build_state(car, track):
+    def build_state(car, track):  # Currently does not consider lateral speed!
         state = () + tuple(car.get_vision_distances(track)) + \
-                (normalize_angle(car.angle),) + tuple(component / car.top_speed for component in car.velocity)
+                (normalize_angle(car.angle),) + ((car.velocity.x + car.top_speed) / (2 * car.top_speed),)
         return state
 
 
@@ -496,10 +515,11 @@ class DQNAgent:
     MEMORY_FRACTION = 0.20
 
     # Exploration settings
-    EPSILON_DECAY = 0.99975
-    MIN_EPSILON = 0.001
+    EPSILON_DECAY = 0.995
+    MIN_EPSILON = 0.01
 
-    def __init__(self):
+    def __init__(self, output_options):
+        self.output_options = output_options
         # main model, gets trained every step
         self.model = self.create_model()
 
@@ -513,14 +533,13 @@ class DQNAgent:
 
         self.epsilon = 1
 
-    @staticmethod
-    def create_model():
+    def create_model(self):
         model = Sequential()
-        model.add(Dense(20, input_shape=(13,)))
+        model.add(Dense(24, input_shape=(12,)))
         model.add(Activation("relu"))
-        model.add(Dense(20))
+        model.add(Dense(48))
         model.add(Activation("relu"))
-        model.add(Dense(9, activation="linear"))
+        model.add(Dense(self.output_options, activation="linear"))
         model.compile(loss="mse", optimizer=Adam(lr=0.001), metrics=['accuracy'])
         return model
 
@@ -528,12 +547,15 @@ class DQNAgent:
         self.replay_memory.append(transition)
 
     def get_qs(self, state):
-        return self.model.predict(np.array(state).reshape(-1, *(13,)))[0]
+        # Reshape array into vector with x inputs (currently 12)
+        return self.model.predict(np.array(state).reshape(-1, *(12,)))[0]
 
     def decay_epsilon(self):
         if self.epsilon > self.MIN_EPSILON:
             self.epsilon *= self.EPSILON_DECAY
             self.epsilon = max(self.MIN_EPSILON, self.epsilon)
+            return True
+        return False
 
     def train(self, terminal_state):
         if len(self.replay_memory) < self.MIN_REPLAY_MEMORY_SIZE:
@@ -584,17 +606,20 @@ class QTrainer:
     CRASH_PUNISHMENT = -1000
     FUEL_COST = 0
     MIN_REWARD = -1000
+    MAX_STALLING_TIME = 60000
 
     DISPLAY_WIDTH = 1920
     DISPLAY_HEIGHT = 1080
-    SHOW_EVERY = 25
+    SHOW_EVERY = 50
 
     EPISODES = 5000  # amount of games, currently not used
     AGGREGATE_STATS_EVERY = 50  # episodes
 
+    STANDARD_TRACKS = True
+
     def __init__(self):
         pygame.init()
-        self.screen = pygame.display.set_mode((self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT))
+        self.screen = pygame.display.set_mode((self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT), flags=pygame.FULLSCREEN)
         self.clock = pygame.time.Clock()
         self.tracks = []
         self.agent = DQNAgent()
@@ -602,23 +627,37 @@ class QTrainer:
     def run(self):
         game_number = 1
         game_rewards = []
-        self.generate_tracks(self.TRACK_AMOUNT)
+        reset_epsilon_game = -1
 
-        track_string = ""
-        for track in self.tracks:
-            track_string += track.__str__() + "\n\n"
-        with open(f"Tracks_{int(time.time())}.txt", "w") as text_file:
-            print(track_string, file=text_file)
+        if self.STANDARD_TRACKS:
+            self.set_standard_traks()
+        else:
+            self.generate_tracks(self.TRACK_AMOUNT)
+            track_string = ""
+            for track in self.tracks:
+                track_string += track.__str__() + "\n\n"
+            with open(f"Tracks_{int(time.time())}.txt", "w") as text_file:
+                print(track_string, file=text_file)
 
         pygame.display.set_caption('DrAIve')
-        game = Game(self.screen, self.GATE_REWARD, self.FINISH_REWARD, self.CRASH_PUNISHMENT, self.FUEL_COST)
+        game = Game(self.agent, self.screen, self.clock, self.GATE_REWARD,
+                    self.FINISH_REWARD, self.CRASH_PUNISHMENT, self.FUEL_COST, self.MAX_STALLING_TIME)
+
+        current_track = random.choice(self.tracks)
+        show_screen_forced = False
 
         run = True
         while run:
             self.agent.tensor_board.step = game_number
-            run, game_reward = game.run(self.agent, self.clock, random.choice(self.tracks),
-                                        game_number % self.SHOW_EVERY == 1)
+            run, game_reward, last_reward, show_screen_forced = game.run(current_track,
+                                                                         game_number % self.SHOW_EVERY == 0,
+                                                                         show_screen_forced)
+            print(f"Game number: {game_number}, reward: {game_reward}, epsilon: {self.agent.epsilon}")
             game_number += 1
+
+            if last_reward == self.FINISH_REWARD:
+                print("Finished! Starting next track.")
+                current_track = random.choice(self.tracks)  # Start on new track
 
             # Append game reward to a list and log stats (every given number of games)
             game_rewards.append(game_reward)
@@ -636,14 +675,52 @@ class QTrainer:
                     self.agent.model.save(
                         f'models/{self.agent.MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
 
-            # Decay epsilon
-            self.agent.decay_epsilon()
+            # Handle epsilon
+            if not self.agent.decay_epsilon() and reset_epsilon_game == -1:  # Epsilon was already at lowest value
+                reset_epsilon_game = game_number + 400
+            if game_number == reset_epsilon_game:
+                print("Resetting epsilon!")
+                reset_epsilon_game = -1
+                self.agent.epsilon = 1
 
         pygame.quit()
 
     def generate_tracks(self, amount):
         for i in range(amount):
             self.tracks.append(TrackEditor(self.screen).run(self.clock))
+
+    def set_standard_traks(self):
+        track1 = Track()
+        track1.car_start_location = (183, 655)
+        track1.car_start_angle = 93.9603118304584
+        track1.walls = (((120, 765), (77, 336)), ((77, 336), (104, 193)), ((104, 193), (209, 107)), ((209, 107), (377, 68)), ((377, 68), (833, 44)), ((833, 44), (1380, 69)), ((1380, 69), (1517, 110)), ((1517, 110), (1595, 159)), ((1595, 159), (1651, 303)), ((1651, 303), (1629, 385)), ((1629, 385), (1501, 439)), ((1501, 439), (1267, 454)), ((1267, 454), (1094, 407)), ((1094, 407), (937, 359)), ((937, 359), (799, 387)), ((799, 387), (592, 484)), ((592, 484), (486, 579)), ((486, 579), (495, 651)), ((495, 651), (591, 689)), ((591, 689), (759, 682)), ((759, 682), (964, 689)), ((964, 689), (1192, 613)), ((1192, 613), (1406, 535)), ((1406, 535), (1673, 519)), ((1673, 519), (1830, 646)), ((1830, 646), (1849, 739)), ((1849, 739), (1855, 867)), ((1855, 867), (1756, 954)), ((1756, 954), (1537, 989)), ((1537, 989), (1124, 964)), ((1124, 964), (772, 954)), ((772, 954), (475, 962)), ((475, 962), (251, 923)), ((251, 923), (120, 765)), ((281, 723), (229, 346)), ((229, 346), (252, 273)), ((252, 273), (324, 227)), ((324, 227), (447, 180)), ((447, 180), (718, 174)), ((718, 174), (894, 160)), ((894, 160), (1279, 199)), ((1279, 199), (1346, 260)), ((1346, 260), (1274, 283)), ((1274, 283), (978, 212)), ((978, 212), (790, 208)), ((790, 208), (561, 288)), ((561, 288), (450, 416)), ((450, 416), (336, 544)), ((336, 544), (345, 710)), ((345, 710), (462, 755)), ((462, 755), (634, 799)), ((634, 799), (1019, 783)), ((1019, 783), (1439, 661)), ((1439, 661), (1626, 667)), ((1626, 667), (1673, 754)), ((1673, 754), (1615, 828)), ((1615, 828), (1397, 854)), ((1397, 854), (635, 834)), ((635, 834), (393, 788)), ((393, 788), (281, 723)))
+        track1.reward_gates = (((258, 558), (100, 569)), ((229, 344), (79, 339)), ((315, 232), (208, 107)), ((537, 176), (528, 61)), ((905, 158), (914, 47)), ((1281, 199), (1381, 70)), ((1347, 262), (1636, 342)), ((1330, 447), (1270, 282)), ((938, 348), (980, 213)), ((796, 388), (565, 287)), ((484, 576), (338, 547)), ((588, 689), (630, 797)), ((964, 691), (1015, 783)), ((1405, 537), (1436, 659)), ((1672, 518), (1626, 665)), ((1844, 863), (1672, 751)), ((1758, 952), (1613, 829)), ((1251, 968), (1241, 852)), ((809, 953), (799, 840)), ((246, 922), (389, 788)), ((258, 558), (100, 569)))
+
+        track2 = Track()
+        track2.car_start_location = (667, 859)
+        track2.car_start_angle = 1.4320961841646465
+        track2.walls = (((860, 800), (1472, 767)), ((1472, 767), (1595, 720)), ((1595, 720), (1618, 579)), ((1618, 579), (1584, 355)), ((1584, 355), (1463, 261)), ((1463, 261), (1284, 303)), ((1284, 303), (1157, 427)), ((1157, 427), (1140, 564)), ((1140, 564), (1100, 668)), ((1100, 668), (955, 718)), ((955, 718), (792, 700)), ((792, 700), (720, 663)), ((720, 663), (604, 540)), ((604, 540), (573, 459)), ((573, 459), (535, 374)), ((535, 374), (420, 335)), ((420, 335), (297, 454)), ((297, 454), (287, 588)), ((287, 588), (309, 652)), ((309, 652), (351, 726)), ((351, 726), (422, 774)), ((422, 774), (663, 794)), ((663, 794), (860, 800)), ((408, 903), (811, 916)), ((811, 916), (1262, 909)), ((1262, 909), (1640, 904)), ((1640, 904), (1766, 814)), ((1766, 814), (1845, 693)), ((1845, 693), (1863, 517)), ((1863, 517), (1811, 317)), ((1811, 317), (1744, 193)), ((1744, 193), (1496, 105)), ((1496, 105), (1291, 123)), ((1291, 123), (1027, 230)), ((1027, 230), (968, 412)), ((968, 412), (922, 473)), ((922, 473), (802, 467)), ((802, 467), (729, 365)), ((729, 365), (643, 204)), ((643, 204), (408, 161)), ((408, 161), (182, 232)), ((182, 232), (43, 493)), ((43, 493), (44, 731)), ((44, 731), (224, 884)), ((224, 884), (408, 903)))
+        track2.reward_gates = (((753, 796), (751, 912)), ((984, 793), (993, 913)), ((1207, 781), (1218, 907)), ((1470, 769), (1512, 903)), ((1591, 718), (1768, 813)), ((1620, 580), (1846, 685)), ((1584, 354), (1806, 313)), ((1465, 254), (1494, 104)), ((1280, 304), (1168, 176)), ((1156, 429), (983, 379)), ((953, 714), (890, 472)), ((600, 540), (802, 466)), ((541, 373), (671, 262)), ((424, 336), (411, 162)), ((367, 388), (185, 234)), ((290, 447), (85, 417)), ((281, 575), (45, 585)), ((308, 650), (150, 817)), ((420, 777), (383, 898)), ((592, 790), (574, 902)), ((753, 796), (751, 912)))
+
+        track3 = Track()
+        track3.car_start_location = (766, 782)
+        track3.car_start_angle = -169.21570213243743
+        track3.walls = (((825, 615), (757, 691)), ((757, 691), (576, 725)), ((576, 725), (389, 686)), ((389, 686), (337, 529)), ((337, 529), (423, 429)), ((423, 429), (569, 424)), ((569, 424), (757, 474)), ((757, 474), (825, 615)), ((1106, 620), (1220, 458)), ((1220, 458), (1413, 430)), ((1413, 430), (1521, 438)), ((1521, 438), (1598, 516)), ((1598, 516), (1544, 655)), ((1544, 655), (1353, 702)), ((1353, 702), (1106, 620)), ((265, 360), (376, 266)), ((376, 266), (557, 275)), ((557, 275), (765, 349)), ((765, 349), (867, 387)), ((867, 387), (940, 523)), ((940, 523), (1100, 355)), ((1100, 355), (1276, 284)), ((1276, 284), (1499, 283)), ((1499, 283), (1742, 368)), ((1742, 368), (1818, 511)), ((1818, 511), (1741, 680)), ((1741, 680), (1570, 839)), ((1570, 839), (1378, 859)), ((1378, 859), (1164, 837)), ((1164, 837), (989, 713)), ((989, 713), (885, 848)), ((885, 848), (621, 909)), ((621, 909), (302, 835)), ((302, 835), (168, 555)), ((168, 555), (265, 360)))
+        track3.reward_gates = (((576, 728), (616, 903)), ((392, 689), (302, 833)), ((339, 528), (167, 555)), ((422, 427), (262, 362)), ((544, 424), (544, 276)), ((695, 456), (779, 358)), ((801, 564), (910, 475)), ((1023, 728), (1113, 626)), ((1244, 841), (1265, 675)), ((1402, 852), (1377, 699)), ((1569, 838), (1490, 666)), ((1759, 640), (1574, 581)), ((1771, 425), (1580, 493)), ((1513, 288), (1491, 434)), ((1281, 285), (1320, 437)), ((1102, 357), (1214, 459)), ((1029, 433), (1140, 571)), ((767, 680), (903, 819)), ((576, 728), (616, 903)))
+
+        track4 = Track()
+        track4.car_start_location = (1105, 308)
+        track4.car_start_angle = -177.83308531681337
+        track4.walls = (((533, 656), (458, 589)), ((458, 589), (463, 460)), ((463, 460), (574, 368)), ((574, 368), (1296, 369)), ((1296, 369), (1372, 457)), ((1372, 457), (1371, 564)), ((1371, 564), (1278, 658)), ((1278, 658), (533, 656)), ((471, 826), (281, 691)), ((281, 691), (276, 431)), ((276, 431), (479, 232)), ((479, 232), (1364, 229)), ((1364, 229), (1569, 402)), ((1569, 402), (1581, 584)), ((1581, 584), (1408, 811)), ((1408, 811), (471, 826)) )
+        track4.reward_gates = (((1004, 231), (1006, 364)), ((810, 230), (807, 365)), ((603, 235), (632, 366)), ((428, 280), (529, 398)), ((280, 427), (459, 457)), ((276, 527), (457, 537)), ((277, 657), (456, 583)), ((399, 776), (530, 653)), ((590, 823), (598, 657)), ((792, 821), (795, 655)), ((945, 817), (945, 654)), ((1111, 814), (1104, 661)), ((1232, 812), (1225, 659)), ((1410, 804), (1297, 640)), ((1520, 665), (1370, 566)), ((1577, 504), (1376, 512)), ((1473, 321), (1344, 421)), ((1361, 231), (1296, 373)), ((1227, 232), (1228, 363)), ((1124, 226), (1127, 368)), ((1004, 231), (1006, 364)))
+
+        track5 = Track()
+        track5.car_start_location = (1579, 661)
+        track5.car_start_angle = 53.44752724790847
+        track5.walls = (((1352, 193), (1210, 244)), ((1210, 244), (908, 257)), ((908, 257), (674, 224)), ((674, 224), (433, 269)), ((433, 269), (274, 413)), ((274, 413), (209, 522)), ((209, 522), (210, 716)), ((210, 716), (302, 779)), ((302, 779), (394, 679)), ((394, 679), (426, 485)), ((426, 485), (521, 345)), ((521, 345), (665, 312)), ((665, 312), (813, 338)), ((813, 338), (938, 396)), ((938, 396), (1026, 495)), ((1026, 495), (1217, 610)), ((1217, 610), (1446, 596)), ((1446, 596), (1581, 454)), ((1581, 454), (1572, 317)), ((1572, 317), (1511, 245)), ((1511, 245), (1352, 193)), ((1295, 63), (1144, 97)), ((1144, 97), (891, 96)), ((891, 96), (648, 76)), ((648, 76), (335, 150)), ((335, 150), (139, 288)), ((139, 288), (35, 462)), ((35, 462), (32, 701)), ((32, 701), (65, 870)), ((65, 870), (186, 942)), ((186, 942), (310, 968)), ((310, 968), (410, 930)), ((410, 930), (479, 866)), ((479, 866), (550, 746)), ((550, 746), (572, 638)), ((572, 638), (630, 559)), ((630, 559), (765, 569)), ((765, 569), (847, 655)), ((847, 655), (1182, 821)), ((1182, 821), (1476, 798)), ((1476, 798), (1701, 760)), ((1701, 760), (1820, 511)), ((1820, 511), (1795, 291)), ((1795, 291), (1733, 161)), ((1733, 161), (1558, 52)), ((1558, 52), (1295, 63)))
+        track5.reward_gates = (((1544, 490), (1780, 589)), ((1575, 389), (1803, 383)), ((1539, 277), (1736, 163)), ((1468, 228), (1556, 51)), ((1351, 189), (1291, 63)), ((1209, 248), (1148, 97)), ((941, 255), (918, 93)), ((675, 222), (649, 75)), ((434, 268), (335, 151)), ((311, 381), (140, 287)), ((215, 517), (32, 458)), ((210, 636), (31, 701)), ((209, 716), (67, 867)), ((302, 778), (311, 958)), ((395, 680), (548, 748)), ((415, 549), (565, 633)), ((519, 344), (630, 557)), ((665, 310), (759, 565)), ((811, 337), (842, 649)), ((1022, 494), (1018, 731)), ((1214, 610), (1182, 813)), ((1450, 596), (1565, 779)), ((1544, 490), (1780, 589)) )
+
+        self.tracks.extend((track1, track2, track3, track4, track5))
 
 
 class ManualPlayer:
@@ -661,7 +738,7 @@ class ManualPlayer:
             track = TrackEditor(self.screen).run(self.clock)
         else:
             track = Track()
-        Game(self.screen, 0, 0, 0, 0).run(None, self.clock, track, True)
+        Game(None, self.screen, self.clock, 0, 0, 0, 0, None).run(track, True)
 
 
 def keys_to_choice(pressed):
