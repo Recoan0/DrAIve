@@ -23,74 +23,54 @@ GREEN = (0, 255, 0)
 class Car:
     VISION_LINE_LENGTH = 400
 
-    def __init__(self, x, y, scale, ppu, image, angle=0.0, length=4, max_steering=45, max_acceleration=40.0,
-                 acceleration_speed=15.0, steering_speed=60, brake_deceleration=20.0, top_speed=8, drag=5):
+    def __init__(self, x, y, scale, ppu, image, angle=0.0, length=4, acceleration_speed=10.0,
+                 steering_speed=4, top_speed=4, drag=0.9, grip=0.9):
         self.position = Vector2(x, y)
         self.velocity = Vector2(0.0, 0.0)
         self.angle = angle
         self.length = length * scale
-        self.max_acceleration = max_acceleration
-        self.max_steering = max_steering
         self.acceleration_speed = acceleration_speed
         self.steering_speed = steering_speed
-        self.brake_deceleration = brake_deceleration
         self.top_speed = top_speed
         self.drag = drag
+        self.grip = grip
         self.ppu = ppu
         self.image = image
         self.width = pygame.transform.rotate(self.image, 0).get_rect().width
         self.height = pygame.transform.rotate(self.image, 0).get_rect().height
 
         self.acceleration = 0.0
-        self.steering = 0.0
         self.current_reward_gate = 0
 
     def update(self, dt):
-        self.velocity += (self.acceleration * dt, 0)
+        self.velocity.x += cos(radians(self.angle)) * self.acceleration * dt
+        self.velocity.y += -sin(radians(self.angle)) * self.acceleration * dt
 
         # Clamp velocity
         self.velocity.x = max(-self.top_speed, min(self.velocity.x, self.top_speed))
+        self.velocity.y = max(-self.top_speed, min(self.velocity.y, self.top_speed))
 
-        if self.steering:
-            turning_radius = self.length / tan(radians(self.steering))
-            angular_velocity = self.velocity.x / turning_radius
-        else:
-            angular_velocity = 0
+        self.position += (self.velocity.x * dt, self.velocity.y * dt)
 
-        self.position += self.velocity.rotate(-self.angle) * dt
-        self.angle += degrees(angular_velocity) * dt
+        if self.acceleration == 0:
+            self.velocity.x *= self.drag
+            self.velocity.y *= self.grip
 
-        self.position.x = max(0, min(28, self.position.x))
-        self.position.y = max(0, min(14, self.position.y))
+        self.position.x = max(0, min(1920 / self.ppu, self.position.x))
+        self.position.y = max(0, min(1080 / self.ppu, self.position.y))
 
-    def send_input(self, choice, dt):
+    def send_input(self, choice):
         if choice in (0, 1, 2):
-            if self.velocity.x < 0:
-                self.acceleration = self.brake_deceleration
-            else:
-                self.acceleration = self.acceleration_speed
+            self.acceleration = self.acceleration_speed
         elif choice in (6, 7, 8):
-            if self.velocity.x > 0:
-                self.acceleration = -self.brake_deceleration
-            else:
-                self.acceleration = -self.acceleration_speed * 0.5
+            self.acceleration = -self.acceleration_speed * 0.6
         else:
-            self.acceleration = -copysign(self.drag, self.velocity.x)
+            self.acceleration = 0
 
         if choice in (0, 3, 6):
-            if self.steering < 0:
-                self.steering = 0
-            self.steering += self.steering_speed * dt
+            self.angle += self.steering_speed
         elif choice in (2, 5, 8):
-            if self.steering > 0:
-                self.steering = 0
-            self.steering -= self.steering_speed * dt
-        else:
-            self.steering = 0
-
-        # Clamp values
-        self.acceleration = max(-self.max_acceleration, min(self.acceleration, self.max_acceleration))
-        self.steering = max(-self.max_steering, min(self.steering, self.max_steering))
+            self.angle -= self.steering_speed
 
     def get_offsets(self):
         # Returns front_offset, side_offset
@@ -365,7 +345,7 @@ class Game:
         ticks_without_passing_gate = 0
 
         while not exit_game:
-            if show_screen_forced:
+            if show_screen_forced or show_screen:
                 dt = self.clock.get_time() / 1000
             else:
                 dt = 1 / self.TICKS  # Standard delta time for running more fps but setting movement to same delta
@@ -391,11 +371,11 @@ class Game:
                     action = np.argmax(self.agent.get_qs(current_state))
                 else:
                     action = np.random.randint(0, self.ACTION_SPACE_SIZE)
-                car.send_input(action, dt)
+                car.send_input(action)
                 ##########
             else:
                 ### PLAYER ###
-                car.send_input(keys_to_choice(pressed), dt)
+                car.send_input(self.keys_to_choice(pressed))
                 ##############
 
             car.update(dt)
@@ -465,6 +445,30 @@ class Game:
         rotated = pygame.transform.rotate(car_image, car.angle)
         rect = rotated.get_rect()
         self.screen.blit(rotated, car.position * ppu - (rect.width / 2, rect.height / 2))
+
+    @staticmethod
+    def keys_to_choice(pressed):
+        if pressed[pygame.K_UP]:
+            if pressed[pygame.K_LEFT]:
+                return 0
+            elif pressed[pygame.K_RIGHT]:
+                return 2
+            else:
+                return 1
+        elif pressed[pygame.K_DOWN]:
+            if pressed[pygame.K_LEFT]:
+                return 6
+            elif pressed[pygame.K_RIGHT]:
+                return 8
+            else:
+                return 7
+        else:
+            if pressed[pygame.K_LEFT]:
+                return 3
+            elif pressed[pygame.K_RIGHT]:
+                return 5
+            else:
+                return 4
 
     @staticmethod
     def build_state(car, track):  # Currently does not consider lateral speed!
@@ -548,7 +552,7 @@ class DQNAgent:
 
     def get_qs(self, state):
         # Reshape array into vector with x inputs (currently 12)
-        return self.model.predict(np.array(state).reshape(-1, *(12,)))[0]
+        return self.target_model.predict(np.array(state).reshape(-1, *(12,)))[0]
 
     def decay_epsilon(self):
         if self.epsilon > self.MIN_EPSILON:
@@ -592,7 +596,8 @@ class DQNAgent:
         if terminal_state:
             self.target_update_counter += 1
 
-        if self.target_update_counter > self.UPDATE_TARGET_EVERY:
+        if self.target_update_counter >= self.UPDATE_TARGET_EVERY:
+            print("Updating taget model!")
             self.target_model.set_weights(self.model.get_weights())
             self.target_update_counter = 0
 
@@ -604,9 +609,9 @@ class QTrainer:
     GATE_REWARD = 100
     FINISH_REWARD = 1000
     CRASH_PUNISHMENT = -1000
-    FUEL_COST = 0
+    FUEL_COST = -0.01
     MIN_REWARD = -1000
-    MAX_STALLING_TIME = 60000
+    MAX_STALLING_TIME = 60
 
     DISPLAY_WIDTH = 1920
     DISPLAY_HEIGHT = 1080
@@ -616,13 +621,14 @@ class QTrainer:
     AGGREGATE_STATS_EVERY = 50  # episodes
 
     STANDARD_TRACKS = True
+    ALLOWED_OUTPUTS = 9
 
     def __init__(self):
         pygame.init()
         self.screen = pygame.display.set_mode((self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT), flags=pygame.FULLSCREEN)
         self.clock = pygame.time.Clock()
         self.tracks = []
-        self.agent = DQNAgent()
+        self.agent = DQNAgent(self.ALLOWED_OUTPUTS)
 
     def run(self):
         game_number = 1
@@ -738,31 +744,7 @@ class ManualPlayer:
             track = TrackEditor(self.screen).run(self.clock)
         else:
             track = Track()
-        Game(None, self.screen, self.clock, 0, 0, 0, 0, None).run(track, True)
-
-
-def keys_to_choice(pressed):
-    if pressed[pygame.K_UP]:
-        if pressed[pygame.K_LEFT]:
-            return 0
-        elif pressed[pygame.K_RIGHT]:
-            return 2
-        else:
-            return 1
-    elif pressed[pygame.K_DOWN]:
-        if pressed[pygame.K_LEFT]:
-            return 6
-        elif pressed[pygame.K_RIGHT]:
-            return 8
-        else:
-            return 7
-    else:
-        if pressed[pygame.K_LEFT]:
-            return 3
-        elif pressed[pygame.K_RIGHT]:
-            return 5
-        else:
-            return 4
+        Game(None, self.screen, self.clock, 0, 0, 0, 0, None).run(track, True, True)
 
 
 def calc_distance(point1, point2):
@@ -822,5 +804,5 @@ tf.compat.v1.set_random_seed(1)
 if not os.path.isdir('models'):
     os.makedirs('models')
 
-QTrainer().run()  # Run with AI!
-# ManualPlayer().run(False)  # Run with manual play!
+# QTrainer().run()  # Run with AI!
+ManualPlayer().run(False)  # Run with manual play!
