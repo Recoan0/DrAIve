@@ -24,7 +24,7 @@ class Car:
     VISION_LINE_LENGTH = 400
 
     def __init__(self, x, y, scale, ppu, image, angle=0.0, length=4, acceleration_speed=10.0,
-                 steering_speed=4, top_speed=4, drag=0.9, grip=0.9):
+                 steering_speed=4, top_speed=4, drag=0.97, grip=0.1, convert_efficiency=0.1):
         self.position = Vector2(x, y)
         self.velocity = Vector2(0.0, 0.0)
         self.angle = angle
@@ -34,6 +34,7 @@ class Car:
         self.top_speed = top_speed
         self.drag = drag
         self.grip = grip
+        self.convert_efficiency = convert_efficiency
         self.ppu = ppu
         self.image = image
         self.width = pygame.transform.rotate(self.image, 0).get_rect().width
@@ -52,9 +53,14 @@ class Car:
 
         self.position += (self.velocity.x * dt, self.velocity.y * dt)
 
-        if self.acceleration == 0:
-            self.velocity.x *= self.drag
-            self.velocity.y *= self.grip
+        # Apply directional grip
+        relative_velocity = self.velocity.rotate(self.angle)
+        relative_angle = self.position.angle_to(relative_velocity)
+        velocity_dy = relative_velocity.y * self.grip
+        relative_velocity.y -= velocity_dy
+        relative_velocity.x += cos(radians(relative_angle)) * velocity_dy * self.convert_efficiency
+        relative_velocity.x *= self.drag
+        self.velocity = relative_velocity.rotate(-self.angle)
 
         self.position.x = max(0, min(1920 / self.ppu, self.position.x))
         self.position.y = max(0, min(1080 / self.ppu, self.position.y))
@@ -380,6 +386,7 @@ class Game:
 
             car.update(dt)
             reward, exit_game = self.rate_action(car, current_track)
+            print(self.build_state(car, current_track))
 
             if self.agent is not None:
                 ### AI ###
@@ -472,8 +479,9 @@ class Game:
 
     @staticmethod
     def build_state(car, track):  # Currently does not consider lateral speed!
-        state = () + tuple(car.get_vision_distances(track)) + \
-                (normalize_angle(car.angle),) + ((car.velocity.x + car.top_speed) / (2 * car.top_speed),)
+        rotated_velocity = car.velocity.rotate(car.angle)
+        state = () + tuple(car.get_vision_distances(track)) + (normalize_angle(car.angle),) + \
+                (rotated_velocity.x / car.top_speed, rotated_velocity.y / car.top_speed)
         return state
 
 
@@ -539,9 +547,9 @@ class DQNAgent:
 
     def create_model(self):
         model = Sequential()
-        model.add(Dense(24, input_shape=(12,)))
-        model.add(Activation("relu"))
-        model.add(Dense(48))
+        # model.add(Dense(24, input_shape=(13,)))
+        # model.add(Activation("relu"))
+        model.add(Dense(48, input_shape=(13,)))
         model.add(Activation("relu"))
         model.add(Dense(self.output_options, activation="linear"))
         model.compile(loss="mse", optimizer=Adam(lr=0.001), metrics=['accuracy'])
@@ -552,7 +560,7 @@ class DQNAgent:
 
     def get_qs(self, state):
         # Reshape array into vector with x inputs (currently 12)
-        return self.target_model.predict(np.array(state).reshape(-1, *(12,)))[0]
+        return self.target_model.predict(np.array(state).reshape(-1, *(13,)))[0]
 
     def decay_epsilon(self):
         if self.epsilon > self.MIN_EPSILON:
@@ -625,7 +633,7 @@ class QTrainer:
 
     def __init__(self):
         pygame.init()
-        self.screen = pygame.display.set_mode((self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT), flags=pygame.FULLSCREEN)
+        self.screen = pygame.display.set_mode((self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT))
         self.clock = pygame.time.Clock()
         self.tracks = []
         self.agent = DQNAgent(self.ALLOWED_OUTPUTS)
@@ -792,13 +800,16 @@ def angle_between_points(point1, point2):
 
 
 def normalize_angle(angle):
-    return (angle % 360) / 360
+    return ((angle % 360) - 180) / 180
 
 
 # For repeatable results
 random.seed(1)
 np.random.seed(1)
 tf.compat.v1.set_random_seed(1)
+
+# Render window
+os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
 
 # Create folder for models
 if not os.path.isdir('models'):
