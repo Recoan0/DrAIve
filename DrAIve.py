@@ -7,10 +7,11 @@ import time
 import os
 
 from pygame.math import Vector2
-from math import sin, cos, tan, radians, degrees, copysign, floor, atan2
+from math import sin, cos, radians, degrees, floor, atan2
 from functools import reduce
-from keras.models import Sequential, load_model
-from keras.layers import Dense, Activation
+from keras import backend as K, Input
+from keras.models import load_model, Model
+from keras.layers import Dense, Lambda, Subtract, Add
 from keras.callbacks import TensorBoard
 from keras.optimizers import Adam
 from collections import deque
@@ -428,7 +429,7 @@ class Game:
     def load_car_image():
         current_dir = os.path.dirname(os.path.abspath(__file__))
         image_path = os.path.join(current_dir, "car.png")
-        car_image = pygame.image.load(image_path).convert_alpha()
+        car_image = pygame.image.load(image_path).convert()
         car_scale = 0.3
         new_car_image_size = (floor(car_image.get_rect().size[0] * car_scale),
                               floor(car_image.get_rect().size[1] * car_scale))
@@ -482,8 +483,9 @@ class DQNAgent:
     EPSILON_DECAY = 0.993878
     MIN_EPSILON = 0.01
 
-    def __init__(self, model_name, output_options, fit_every_steps):
+    def __init__(self, model_name, input_shape, output_options, fit_every_steps):
         self.MODEL_NAME = model_name
+        self.input_shape = input_shape
         self.output_options = output_options
         # main model, gets trained every step
         self.model = self.create_model()
@@ -500,13 +502,17 @@ class DQNAgent:
         self.epsilon = 1
 
     def create_model(self):
-        model = Sequential()
-        model.add(Dense(64, input_shape=(13,)))
-        model.add(Activation("relu"))
-        model.add(Dense(32))
-        model.add(Activation("relu"))
-        model.add(Dense(self.output_options, activation="linear"))
+        inputs = Input(shape=self.input_shape)
+        state_value = Dense(1, activation="linear")(inputs)
+        hidden = Dense(64, input_shape=self.input_shape, activation="relu")(inputs)
+        hidden2 = Dense(32, activation="relu")(hidden)
+        advantage_values = Dense(self.output_options, activation="linear")(hidden2)
+        mean = Lambda(lambda x: K.mean(x, axis=1, keepdims=True))(advantage_values)
+        advantage_values = Subtract()([advantage_values, mean])
+        outputs = Add()[state_value, advantage_values]
+        model = Model(inputs=inputs, outputs=outputs)
         model.compile(loss="mse", optimizer=Adam(lr=self.LEARNING_RATE), metrics=['accuracy'])
+
         return model
 
     def load_model(self, model):
@@ -541,9 +547,10 @@ class DQNAgent:
         current_states = np.array([transition[0] for transition in minibatch])
         current_qs_list = self.model.predict(current_states)
 
-        # FOR REGULAR TARGETED DQN
-        # new_current_states = np.array([transition[3] for transition in minibatch])
-        # future_qs_list = self.target_model.predict(new_current_states)
+        new_current_states = np.array([transition[3] for transition in minibatch])
+        future_qs_list = self.target_model.predict(new_current_states)
+
+        next_move_list = self.model.predict(new_current_states)  # FOR DOUBLE DQN
 
         X = []
         y = []
@@ -553,8 +560,9 @@ class DQNAgent:
                 # future_q = np.max(future_qs_list[index])  # FOR REGULAR TARGETED DQN
 
                 # FOR DOUBLE DQN
-                model_selected_action = np.argmax(self.model.predict(new_current_state))  # action selected by online model
-                future_q = self.target_model.predict(new_current_state)[0][model_selected_action]  # action evaluated by target model
+                model_selected_action = np.argmax(next_move_list[index])  # action selected by online model
+                future_q = future_qs_list[index][model_selected_action]  # action evaluated by target model
+
                 new_q = reward + self.DISCOUNT * future_q
             else:
                 new_q = reward
@@ -597,6 +605,7 @@ class QTrainer:
     FIT_EVERY_STEPS = 4
 
     STANDARD_TRACKS = True
+    INPUT_SHAPE = (13,)
     ALLOWED_OUTPUTS = 9
 
     def __init__(self, model_name):
@@ -604,7 +613,7 @@ class QTrainer:
         self.screen = pygame.display.set_mode((self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT))
         self.clock = pygame.time.Clock()
         self.tracks = []
-        self.agent = DQNAgent(model_name, self.ALLOWED_OUTPUTS, self.FIT_EVERY_STEPS)
+        self.agent = DQNAgent(model_name, self.INPUT_SHAPE, self.ALLOWED_OUTPUTS, self.FIT_EVERY_STEPS)
         self.show_track_forced = True
         self.limit_fps = False
 
@@ -686,7 +695,7 @@ class QTrainer:
                     self.agent.model.save(
                         f'models/{self.agent.MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}'
                         f'avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
-                    self.plot_rewards(aggr_ep_rewards)
+                self.plot_rewards(aggr_ep_rewards)
 
             # Handle epsilon
             if not self.agent.decay_epsilon() and reset_epsilon_game == -1:  # Epsilon was already at lowest value
