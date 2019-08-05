@@ -407,7 +407,7 @@ class Game:
             return self.crash_punishment, True
         elif self.car.hit_right_reward_gate(self.track):
             if self.car.current_reward_gate % len(self.track.get_reward_gates()) == 0:
-                return self.finish_reward, False  # True ############################################################################## DOESNT STOP AFTER COMPLETING TRACK FOR TRIAL
+                return self.finish_reward, False  # True  # CURRENTLY DOESNT STOP AFTER COMPLETING TRACK
             return self.gate_reward, False
         elif self.car.hit_wrong_reward_gate(self.track):
             return -self.gate_reward, False
@@ -428,7 +428,7 @@ class Game:
     def load_car_image():
         current_dir = os.path.dirname(os.path.abspath(__file__))
         image_path = os.path.join(current_dir, "car.png")
-        car_image = pygame.image.load(image_path)
+        car_image = pygame.image.load(image_path).convert_alpha()
         car_scale = 0.3
         new_car_image_size = (floor(car_image.get_rect().size[0] * car_scale),
                               floor(car_image.get_rect().size[1] * car_scale))
@@ -528,8 +528,7 @@ class DQNAgent:
 
     def decay_epsilon(self):
         if self.epsilon > self.MIN_EPSILON:
-            self.epsilon *= self.EPSILON_DECAY
-            self.epsilon = max(self.MIN_EPSILON, self.epsilon)
+            self.epsilon = max(self.MIN_EPSILON, self.epsilon * self.EPSILON_DECAY)
             return True
         return False
 
@@ -542,16 +541,21 @@ class DQNAgent:
         current_states = np.array([transition[0] for transition in minibatch])
         current_qs_list = self.model.predict(current_states)
 
-        new_current_states = np.array([transition[3] for transition in minibatch])
-        future_qs_list = self.target_model.predict(new_current_states)
+        # FOR REGULAR TARGETED DQN
+        # new_current_states = np.array([transition[3] for transition in minibatch])
+        # future_qs_list = self.target_model.predict(new_current_states)
 
         X = []
         y = []
 
         for index, (current_state, action, reward, new_current_state, done) in enumerate(minibatch):
             if not done:
-                max_future_q = np.max(future_qs_list[index])
-                new_q = reward + self.DISCOUNT * max_future_q
+                # future_q = np.max(future_qs_list[index])  # FOR REGULAR TARGETED DQN
+
+                # FOR DOUBLE DQN
+                model_selected_action = np.argmax(self.model.predict(new_current_state))  # action selected by online model
+                future_q = self.target_model.predict(new_current_state)[0][model_selected_action]  # action evaluated by target model
+                new_q = reward + self.DISCOUNT * future_q
             else:
                 new_q = reward
 
@@ -628,7 +632,7 @@ class QTrainer:
         dt = 1 / self.TICKS  # Standard delta time for consistent AI movement
         current_track = random.choice(self.tracks)
 
-        while game_number < episodes:
+        while game_number <= episodes:
             game = Game(current_track, self.screen, self.GATE_REWARD, self.FINISH_REWARD,
                         self.CRASH_PUNISHMENT, self.FUEL_COST, self.MAX_STALLING_TIME)
             self.agent.tensor_board.step = game_number
@@ -653,10 +657,9 @@ class QTrainer:
                 fit_network_counter += 1
                 current_state = new_state
 
-                show_time = self.draw_screen(game, game_number, show_time, dt)
+                show_time = self.draw_screen(game, game_number, show_time)
 
             print(f"Game number: {game_number}, reward: {game_reward}, epsilon: {self.agent.epsilon}")
-            game_number += 1
 
             # if reward == self.FINISH_REWARD:
             #     print("Finished! Starting next track.")
@@ -683,6 +686,7 @@ class QTrainer:
                     self.agent.model.save(
                         f'models/{self.agent.MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}'
                         f'avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
+                    self.plot_rewards(aggr_ep_rewards)
 
             # Handle epsilon
             if not self.agent.decay_epsilon() and reset_epsilon_game == -1:  # Epsilon was already at lowest value
@@ -691,15 +695,11 @@ class QTrainer:
                 print("Resetting epsilon!")
                 reset_epsilon_game = -1
                 self.agent.epsilon = 1
+            game_number += 1
 
         pygame.quit()
 
-        plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['avg'], label="avg")
-        plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['min'], label="min")
-        plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['max'], label="max")
-        plt.legend(loc=4)
-        plt.savefig(f"models/{self.agent.MODEL_NAME}-{int(time.time())}.png")
-        plt.show()
+        self.plot_rewards(aggr_ep_rewards)
 
     def generate_tracks(self, amount):
         for i in range(amount):
@@ -730,7 +730,7 @@ class QTrainer:
 
         return toggle_show, toggle_limit_fps
 
-    def draw_screen(self, game, game_number, show_time, dt):
+    def draw_screen(self, game, game_number, show_time):
         if self.show_track_forced or not game_number % self.SHOW_EVERY:
             self.draw_track(game.car, game.track, game.car_image, game.ppu)
             pygame.display.update()
@@ -772,6 +772,14 @@ class QTrainer:
         rotated = pygame.transform.rotate(car_image, car.angle)
         rect = rotated.get_rect()
         self.screen.blit(rotated, car.position * ppu - (rect.width / 2, rect.height / 2))
+
+    def plot_rewards(self, aggr_ep_rewards):
+        plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['avg'], label="avg")
+        plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['min'], label="min")
+        plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['max'], label="max")
+        plt.legend(loc=4)
+        plt.savefig(f"models/{self.agent.MODEL_NAME}-{int(time.time())}.png")
+        plt.show()
 
 
 class ManualPlayer:
@@ -883,6 +891,6 @@ os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
 if not os.path.isdir('models'):
     os.makedirs('models')
 
-QTrainer("DrAIve-DDQN-Vanilla-TrainEvery4").run(None, None, 1000)  # Run with AI!
+QTrainer("DrAIve-Double-DQN-TrainEvery4").run(None, None, 1000)  # Run with AI!
 # QTrainer().run("best_model.model", 1, 100000)  # Run with existing model!
 # ManualPlayer().run(False)  # Run with manual play!
