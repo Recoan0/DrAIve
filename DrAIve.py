@@ -369,7 +369,7 @@ class TrackEditor:
 
 
 class Game:
-    TICKS = 60
+    TICKS = 30
 
     def __init__(self, agent, screen, clock, allowed_outputs, gate_reward, finish_reward,
                  crash_punishment, fuel_cost, max_stalling_without_reward_gate, fit_network_every):
@@ -411,7 +411,7 @@ class Game:
         fit_network_counter = 0
 
         while not exit_game:
-            if self.agent is not None:
+            if self.agent is None:
                 dt = self.clock.get_time() / 1000
             else:
                 dt = 1 / self.TICKS  # Standard delta time for consistent AI movement
@@ -595,9 +595,9 @@ class DQNAgent:
     MEMORY_FRACTION = 0.20
     LEARNING_RATE = 0.002
 
-    # Exploration settings
+    # Exploration settings, current settings make epsilon reset about every 2000 runs
     EPSILON_DECAY = 0.9975
-    MIN_EPSILON = 0.01
+    MIN_EPSILON = 0.0125
 
     def __init__(self, model_name, output_options, fit_every_games):
         self.MODEL_NAME = model_name
@@ -772,9 +772,9 @@ class QTrainer:
                                                      epsilon=self.agent.epsilon)
 
                 # Save model, but only when min reward is greater or equal a set value
-                if min_reward >= self.MIN_REWARD:
+                if min_reward >= self.MIN_REWARD or max_reward >= self.FINISH_REWARD:
                     self.agent.model.save(
-                        f'Models/{self.agent.MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
+                        f'models/{self.agent.MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
 
             # Handle epsilon
             if not self.agent.decay_epsilon() and reset_epsilon_game == -1:  # Epsilon was already at lowest value
@@ -790,7 +790,7 @@ class QTrainer:
         plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['min'], label="min")
         plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['max'], label="max")
         plt.legend(loc=4)
-        plt.savefig(f"Models/{self.agent.MODEL_NAME}-{int(time.time())}.png")
+        plt.savefig(f"models/{self.agent.MODEL_NAME}-{int(time.time())}.png")
         plt.show()
 
     def generate_tracks(self, amount):
@@ -871,13 +871,13 @@ random.seed(1)
 np.random.seed(1)
 tf.compat.v1.set_random_seed(1)
 
-# Render window
+# Render window in correct position on screen
 os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
 
 # Create folder for models
 if not os.path.isdir('models'):
     os.makedirs('models')
 
-QTrainer("DrAIve-DDQN-Vanilla").run(None, 1, 10000)  # Run with AI!
+QTrainer("DrAIve-DDQN-Vanilla-TrainEvery4").run(None, 1, 10000)  # Run with AI!
 # QTrainer().run("best_model.model", 1, 100000)  # Run with existing model!
 # ManualPlayer().run(False)  # Run with manual play!
