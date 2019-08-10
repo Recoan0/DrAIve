@@ -370,7 +370,7 @@ class TrackEditor:
 
 
 class Game:
-    def __init__(self, track, screen, gate_reward, finish_reward,
+    def __init__(self, cars, track, screen, gate_reward, finish_reward,
                  crash_punishment, fuel_cost, max_stalling_time):
         self.track = track
         self.screen = screen
@@ -382,43 +382,51 @@ class Game:
 
         self.car_scale, self.car_image, self.ppu = self.load_car_image()
 
-        self.car = self.build_car()
+        for i in range(len(cars)):
+            cars[i] = self.build_car()
+        self.cars = cars
 
         self.stall_time = 0
 
-    def step(self, action, dt):
-        self.car.send_input(action)
-        self.car.update(dt)
-        reward, exit_game = self.rate_action()
+    def step(self, actions, dt):
+        for i in range(len(self.cars)):
+            self.cars[i].send_input(actions[i])
+            self.cars[i].update(dt)
 
-        if reward != self.gate_reward:
+        results = []
+        for i in range(len(self.cars)):
+            results.append(self.rate_action(self.cars[i]))
+
+        if results[0][0] != self.gate_reward:
             self.stall_time += dt
             if self.stall_time > self.max_stalling_time:
-                reward = self.crash_punishment
-                exit_game = True
+                results[0] = (self.crash_punishment, True)
         else:
             self.stall_time = 0
 
-        new_state = self.build_state()
+        new_states = []
+        for i in range(len(self.cars)):
+            new_states.append(self.build_state(self.cars[i]))
+        end_game = results[0][1]
+        rewards = [i[0] for i in results]
 
-        return new_state, reward, exit_game
+        return new_states, rewards, end_game
 
-    def rate_action(self):  # Returns score and whether the level should be reset
-        if self.car.hit_wall(self.track):
+    def rate_action(self, car):  # Returns score and whether the level should be reset
+        if car.hit_wall(self.track):
             return self.crash_punishment, True
-        elif self.car.hit_right_reward_gate(self.track):
-            if self.car.current_reward_gate % len(self.track.get_reward_gates()) == 0:
+        elif car.hit_right_reward_gate(self.track):
+            if car.current_reward_gate % len(self.track.get_reward_gates()) == 0:
                 return self.finish_reward, False  # True  # CURRENTLY DOESNT STOP AFTER COMPLETING TRACK
             return self.gate_reward, False
-        elif self.car.hit_wrong_reward_gate(self.track):
+        elif car.hit_wrong_reward_gate(self.track):
             return -self.gate_reward, False
         else:
             return self.fuel_cost, False
 
-    def build_state(self):
-        rotated_velocity = self.car.velocity.rotate(self.car.angle)
-        state = () + tuple(self.car.get_vision_distances(self.track)) + (normalize_angle(self.car.angle),) + \
-                (rotated_velocity.x / self.car.top_speed, rotated_velocity.y / self.car.top_speed)
+    def build_state(self, car):
+        rotated_velocity = car.velocity.rotate(car.angle)
+        state = () + tuple(car.get_vision_distances(self.track)) + (rotated_velocity.x / car.top_speed, rotated_velocity.y / car.top_speed)
         return state
 
     def build_car(self):
@@ -471,16 +479,16 @@ class ModifiedTensorBoard(TensorBoard):
 
 
 class DQNAgent:
-    REPLAY_MEMORY_SIZE = 50_000  # How many last steps to keep for model training
-    MIN_REPLAY_MEMORY_SIZE = 5_000  # Minimum number of steps in memory to start training
+    REPLAY_MEMORY_SIZE = 100_000  # How many last steps to keep for model training
+    MIN_REPLAY_MEMORY_SIZE = 20_000  # Minimum number of steps in memory to start training
     MINIBATCH_STANDARD_SIZE = 32  # How many steps/samples to use for training
     DISCOUNT = 0.99
     UPDATE_TARGET_EVERY = 5_000  # Amount of steps
     MEMORY_FRACTION = 0.20
-    LEARNING_RATE = 0.002
+    LEARNING_RATE = 0.001
 
     # Exploration settings, current settings make epsilon reset about every 1000 runs
-    EPSILON_DECAY = 0.993878
+    EPSILON_DECAY = 0.9978603
     MIN_EPSILON = 0.01
 
     def __init__(self, model_name, input_shape, output_options, fit_every_steps):
@@ -488,10 +496,10 @@ class DQNAgent:
         self.input_shape = input_shape
         self.output_options = output_options
         # main model, gets trained every step
-        self.model = self.create_model()
+        self.model = self.create_standard_model()
 
         # Target model, this is what we .predict against every step
-        self.target_model = self.create_model()
+        self.target_model = self.create_standard_model()
         self.target_model.set_weights(self.model.get_weights())
 
         self.replay_memory = deque(maxlen=self.REPLAY_MEMORY_SIZE)
@@ -501,17 +509,27 @@ class DQNAgent:
 
         self.epsilon = 1
 
-    def create_model(self):
+    def create_dueling_model(self):
         inputs = Input(shape=self.input_shape)
-        state_value = Dense(1, activation="linear")(inputs)
-        hidden = Dense(64, input_shape=self.input_shape, activation="relu")(inputs)
-        hidden2 = Dense(32, activation="relu")(hidden)
+        hidden = Dense(64, input_shape=self.input_shape, activation="relu", kernel_initializer=tf.variance_scaling_initializer(scale=2))(inputs)
+        hidden2 = Dense(32, activation="relu", kernel_initializer=tf.variance_scaling_initializer(scale=2))(hidden)
+        state_value = Dense(1, activation="linear")(hidden2)
         advantage_values = Dense(self.output_options, activation="linear")(hidden2)
         mean = Lambda(lambda x: K.mean(x, axis=1, keepdims=True))(advantage_values)
         advantage_values = Subtract()([advantage_values, mean])
-        outputs = Add()[state_value, advantage_values]
+        outputs = Add()([state_value, advantage_values])
         model = Model(inputs=inputs, outputs=outputs)
-        model.compile(loss="mse", optimizer=Adam(lr=self.LEARNING_RATE), metrics=['accuracy'])
+        model.compile(loss=tf.keras.losses.Huber(), optimizer=Adam(lr=self.LEARNING_RATE), metrics=['accuracy'])
+
+        return model
+
+    def create_standard_model(self):
+        inputs = Input(shape=self.input_shape)
+        hidden = Dense(64, input_shape=self.input_shape, activation="relu", kernel_initializer=tf.variance_scaling_initializer(scale=2))(inputs)
+        hidden2 = Dense(32, activation="relu", kernel_initializer=tf.variance_scaling_initializer(scale=2))(hidden)
+        outputs = Dense(self.output_options, activation="linear")(hidden2)
+        model = Model(inputs=inputs, outputs=outputs)
+        model.compile(loss=tf.keras.losses.Huber(), optimizer=Adam(lr=self.LEARNING_RATE), metrics=['accuracy'])
 
         return model
 
@@ -530,7 +548,7 @@ class DQNAgent:
 
     def get_qs(self, state):
         # Reshape array into vector with x inputs (currently 12)
-        return self.model.predict(np.array(state).reshape(-1, *(13,)))[0]
+        return self.model.predict(np.array(state).reshape(-1, *self.input_shape))[0]
 
     def decay_epsilon(self):
         if self.epsilon > self.MIN_EPSILON:
@@ -583,15 +601,55 @@ class DQNAgent:
         return step + 1
 
 
+class TrackDrawer:
+    @staticmethod
+    def draw_track(screen, cars, current_track):
+        screen.fill(BLACK)
+        TrackDrawer.draw_walls(screen, current_track)
+        TrackDrawer.draw_reward_gates(screen, current_track)
+        if len(cars) == 1:
+            car = cars[0]
+            right_gate = current_track.get_reward_gates()[car.current_reward_gate]
+            pygame.draw.line(screen, BLUE, right_gate[0], right_gate[1], 4)
+            wrong_gate = current_track.get_reward_gates()[car.wrong_reward_gate]
+            pygame.draw.line(screen, RED, wrong_gate[0], wrong_gate[1], 4)
+        TrackDrawer.draw_cars(screen, cars, current_track)
+
+    @staticmethod
+    def draw_walls(screen, track):
+        for line in track.get_walls():
+            pygame.draw.line(screen, WHITE, line[0], line[1], 3)
+
+    @staticmethod
+    def draw_reward_gates(screen, track):
+        for line in track.get_reward_gates():
+            pygame.draw.line(screen, GREEN, line[0], line[1], 3)
+
+    @staticmethod
+    def draw_cars(screen, cars, track):
+        for car in cars:
+            for line in car.vision_lines():
+                pygame.draw.line(screen, WHITE, line[0], line[1])
+                vision_point = get_closest_vision_intersection(line, track)
+                if vision_point is not None:
+                    integer_point = (int(vision_point[0]), int(vision_point[1]))
+                    pygame.draw.circle(screen, RED, integer_point, 8)
+            for line in car.hitbox_lines():
+                pygame.draw.line(screen, WHITE, line[0], line[1])
+            rotated = pygame.transform.rotate(car.image, car.angle)
+            rect = rotated.get_rect()
+            screen.blit(rotated, car.position * car.ppu - (rect.width / 2, rect.height / 2))
+
+
 class QTrainer:
     TRACK_AMOUNT = 5
     TICKS = 30  # Number of steps per second the AI is asked to give an action
 
     # These need to remain the same after AI has started training
-    GATE_REWARD = 100
-    FINISH_REWARD = 5000
-    CRASH_PUNISHMENT = -1000
-    FUEL_COST = 0
+    GATE_REWARD = 0.1
+    FINISH_REWARD = 1
+    CRASH_PUNISHMENT = -1
+    FUEL_COST = 0.0001
     MIN_REWARD = -1000
     MAX_STALLING_TIME = 30
 
@@ -600,17 +658,18 @@ class QTrainer:
     SHOW_EVERY = 50
     SHOW_FPS_EVERY = 1
 
-    CONTINUE_AFTER_EPSILON_TARGET = 250
+    CONTINUE_AFTER_EPSILON_TARGET = 450
     AGGREGATE_STATS_EVERY = 50  # episodes
     FIT_EVERY_STEPS = 4
 
     STANDARD_TRACKS = True
-    INPUT_SHAPE = (13,)
+    INPUT_SHAPE = (12,)
     ALLOWED_OUTPUTS = 9
 
     def __init__(self, model_name):
         pygame.init()
-        self.screen = pygame.display.set_mode((self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT))
+        self.screen = pygame.display.set_mode((self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT), flags=pygame.FULLSCREEN | pygame.DOUBLEBUF)
+        self.screen.set_alpha(None)
         self.clock = pygame.time.Clock()
         self.tracks = []
         self.agent = DQNAgent(model_name, self.INPUT_SHAPE, self.ALLOWED_OUTPUTS, self.FIT_EVERY_STEPS)
@@ -641,30 +700,32 @@ class QTrainer:
         dt = 1 / self.TICKS  # Standard delta time for consistent AI movement
         current_track = random.choice(self.tracks)
 
+        current_track = self.tracks[1]  # FOR PREDETERMINED TRACK
+
         while game_number <= episodes:
-            game = Game(current_track, self.screen, self.GATE_REWARD, self.FINISH_REWARD,
+            game = Game([()], current_track, self.screen, self.GATE_REWARD, self.FINISH_REWARD,
                         self.CRASH_PUNISHMENT, self.FUEL_COST, self.MAX_STALLING_TIME)
             self.agent.tensor_board.step = game_number
             done = False
             game_reward = 0
             show_time = 0
-            current_state = game.build_state()
+            current_state = game.build_state(game.cars[0])
 
             while not done:  # Game loop
                 pygame.event.get()  # Prevents OS from seeing game as not responding
                 toggle_show, toggle_limit_fps = self.handle_keyboard(toggle_show, toggle_limit_fps)
 
                 action = self.agent.get_action(current_state)
-                new_state, reward, done = game.step(action, dt)
+                new_states, rewards, done = game.step([action], dt)
 
-                game_reward += reward
-                self.agent.update_replay_memory((current_state, action, reward, new_state, done))
+                game_reward += rewards[0]
+                self.agent.update_replay_memory((current_state, action, rewards[0], new_states[0], done))
 
                 if fit_network_counter % self.FIT_EVERY_STEPS == 0:
                     fit_network_counter = 0
                     update_target_counter = self.agent.train(done, update_target_counter)
                 fit_network_counter += 1
-                current_state = new_state
+                current_state = new_states[0]
 
                 show_time = self.draw_screen(game, game_number, show_time)
 
@@ -695,7 +756,6 @@ class QTrainer:
                     self.agent.model.save(
                         f'models/{self.agent.MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}'
                         f'avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
-                self.plot_rewards(aggr_ep_rewards)
 
             # Handle epsilon
             if not self.agent.decay_epsilon() and reset_epsilon_game == -1:  # Epsilon was already at lowest value
@@ -705,6 +765,7 @@ class QTrainer:
                 reset_epsilon_game = -1
                 self.agent.epsilon = 1
             game_number += 1
+        self.plot_rewards(aggr_ep_rewards)
 
         pygame.quit()
 
@@ -741,7 +802,7 @@ class QTrainer:
 
     def draw_screen(self, game, game_number, show_time):
         if self.show_track_forced or not game_number % self.SHOW_EVERY:
-            self.draw_track(game.car, game.track, game.car_image, game.ppu)
+            TrackDrawer.draw_track(self.screen, game.cars, game.track)
             pygame.display.update()
             if self.limit_fps:
                 self.clock.tick(self.TICKS)
@@ -749,7 +810,7 @@ class QTrainer:
                 self.clock.tick()
         else:
             self.clock.tick()
-            show_time += self.clock.get_time()
+            show_time += self.clock.get_time() / 1000
             if show_time > self.SHOW_FPS_EVERY:
                 self.screen.fill(BLACK)
                 rect = self.screen.blit(pygame.font.SysFont('Comic Sans MS', 25).render(
@@ -760,28 +821,6 @@ class QTrainer:
                 show_time = 0
         return show_time
 
-    def draw_track(self, car, current_track, car_image, ppu):
-        self.screen.fill(BLACK)
-        for line in current_track.get_walls():
-            pygame.draw.line(self.screen, WHITE, line[0], line[1], 3)
-        for line in current_track.get_reward_gates():
-            pygame.draw.line(self.screen, GREEN, line[0], line[1], 3)
-        right_gate = current_track.get_reward_gates()[car.current_reward_gate]
-        pygame.draw.line(self.screen, BLUE, right_gate[0], right_gate[1], 4)
-        wrong_gate = current_track.get_reward_gates()[car.wrong_reward_gate]
-        pygame.draw.line(self.screen, RED, wrong_gate[0], wrong_gate[1], 4)
-        for line in car.vision_lines():
-            pygame.draw.line(self.screen, WHITE, line[0], line[1])
-            vision_point = get_closest_vision_intersection(line, current_track)
-            if vision_point is not None:
-                integer_point = (int(vision_point[0]), int(vision_point[1]))
-                pygame.draw.circle(self.screen, RED, integer_point, 8)
-        for line in car.hitbox_lines():
-            pygame.draw.line(self.screen, WHITE, line[0], line[1])
-        rotated = pygame.transform.rotate(car_image, car.angle)
-        rect = rotated.get_rect()
-        self.screen.blit(rotated, car.position * ppu - (rect.width / 2, rect.height / 2))
-
     def plot_rewards(self, aggr_ep_rewards):
         plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['avg'], label="avg")
         plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['min'], label="min")
@@ -789,6 +828,11 @@ class QTrainer:
         plt.legend(loc=4)
         plt.savefig(f"models/{self.agent.MODEL_NAME}-{int(time.time())}.png")
         plt.show()
+
+
+class AIPlayGround:
+    def __init__(self, ais):
+        self.ais = ais
 
 
 class ManualPlayer:
@@ -808,12 +852,12 @@ class ManualPlayer:
             track = TrackEditor(self.screen).run(self.clock)
         else:
             track = Track.set_standard_tracks()[0]
-        game = Game(track, self.screen, 0, 0, 0, 0, None)
+        game = Game([Car(0, 0, 0, 0, None)], track, self.screen, 0, 0, 0, 0, None)
         done = False
         while not done:
             pressed = pygame.key.get_pressed()
             action = self.keys_to_choice(pressed)
-            _, _, done = game.step(action, self.clock.tick(self.TICKS))
+            _, _, done = game.step([action], self.clock.tick(self.TICKS))
 
     @staticmethod
     def keys_to_choice(pressed):
@@ -900,6 +944,6 @@ os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
 if not os.path.isdir('models'):
     os.makedirs('models')
 
-QTrainer("DrAIve-Double-DQN-TrainEvery4").run(None, None, 1000)  # Run with AI!
+QTrainer("DrAIve-Double-DQN-TrainEvery4").run(None, None, 2500)  # Run with AI!
 # QTrainer().run("best_model.model", 1, 100000)  # Run with existing model!
 # ManualPlayer().run(False)  # Run with manual play!
