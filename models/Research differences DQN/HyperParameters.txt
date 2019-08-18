@@ -1,0 +1,37 @@
+class DQNAgent:
+    REPLAY_MEMORY_SIZE = 100_000  # How many last steps to keep for model training
+    MIN_REPLAY_MEMORY_SIZE = 20_000  # Minimum number of steps in memory to start training
+    MINIBATCH_STANDARD_SIZE = 32  # How many steps/samples to use for training
+    DISCOUNT = 0.99
+    UPDATE_TARGET_EVERY = 5_000  # Amount of steps
+    MEMORY_FRACTION = 0.20
+    LEARNING_RATE = 0.001
+
+    # Exploration settings, current settings make epsilon reset about every 1000 runs
+    EPSILON_DECAY = 0.9978603
+    MIN_EPSILON = 0.01
+
+class QTrainer:
+    TRACK_AMOUNT = 5
+    TICKS = 30  # Number of steps per second the AI is asked to give an action
+
+    # These need to remain the same after AI has started training
+    GATE_REWARD = 0.1
+    FINISH_REWARD = 1
+    CRASH_PUNISHMENT = -1
+    FUEL_COST = 0.0001
+    MIN_REWARD = -1000
+    MAX_STALLING_TIME = 30
+
+    DISPLAY_WIDTH = 1920
+    DISPLAY_HEIGHT = 1080
+    SHOW_EVERY = 50
+    SHOW_FPS_EVERY = 1
+
+    CONTINUE_AFTER_EPSILON_TARGET = 450
+    AGGREGATE_STATS_EVERY = 50  # episodes
+    FIT_EVERY_STEPS = 4
+
+    STANDARD_TRACKS = True
+    INPUT_SHAPE = (12,)
+    ALLOWED_OUTPUTS = 9
