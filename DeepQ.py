@@ -11,7 +11,7 @@ from keras.models import load_model, Model
 from keras.layers import Dense, Lambda, Subtract, Add
 from keras.optimizers import Adam
 
-from DrAIve import Game, Track, TrackEditor
+from DrAIve import DrAIve
 
 
 WHITE = (255, 255, 255)
@@ -292,14 +292,6 @@ class QTrainer:
     TRACK_AMOUNT = 5
     TICKS = 30  # Number of steps per second the AI is asked to give an action
 
-    # These need to remain the same after AI has started training
-    GATE_REWARD = 0.1
-    FINISH_REWARD = 1
-    CRASH_PUNISHMENT = -1
-    FUEL_COST = 0.0001
-    MIN_REWARD = -1000
-    MAX_STALLING_TIME = 30
-
     DISPLAY_WIDTH = 1920
     DISPLAY_HEIGHT = 1080
     SHOW_EVERY = 50
@@ -310,16 +302,14 @@ class QTrainer:
     FIT_EVERY_STEPS = 4
 
     STANDARD_TRACKS = True
-    INPUT_SHAPE = (12,)
-    ALLOWED_OUTPUTS = 9
 
-    def __init__(self, model_name, double, dueling):
+    def __init__(self, env, model_name, double, dueling):
         pygame.init()
-        self.screen = pygame.display.set_mode((self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT))
+        self.screen = env.screen
         self.screen.set_alpha(None)
         self.clock = pygame.time.Clock()
-        self.tracks = []
-        self.agent = DQNAgent(model_name, double, dueling, self.INPUT_SHAPE, self.ALLOWED_OUTPUTS, self.FIT_EVERY_STEPS)
+        self.env = env
+        self.agent = DQNAgent(model_name, double, dueling, env.OUTPUT_SHAPE, env.ALLOWED_INPUTS, self.FIT_EVERY_STEPS)
         self.show_track_forced = True
         self.limit_fps = False
 
@@ -331,12 +321,6 @@ class QTrainer:
         game_rewards = []
         reset_epsilon_game = -1
         aggr_ep_rewards = {'ep': [], 'avg': [], 'min': [], 'max': []}
-
-        if self.STANDARD_TRACKS:
-            self.tracks = Track.set_standard_tracks()
-        else:
-            self.generate_tracks(self.TRACK_AMOUNT)
-            self.save_tracks()
         pygame.display.set_caption('DrAIve')
 
         toggle_show = False
@@ -345,19 +329,15 @@ class QTrainer:
         update_target_counter = 0
 
         dt = 1 / self.TICKS  # Standard delta time for consistent AI movement
-        current_track = random.choice(self.tracks)
 
-        current_track = self.tracks[1]  # FOR PREDETERMINED TRACK
-
-        self.fill_agent_memory(current_track, dt, toggle_show, toggle_limit_fps)
+        self.fill_agent_memory(dt, toggle_show, toggle_limit_fps)
 
         while game_number <= episodes:
-            game = Game(1, current_track, self.screen, self.GATE_REWARD, self.FINISH_REWARD,
-                        self.CRASH_PUNISHMENT, self.FUEL_COST, self.MAX_STALLING_TIME)
+            self.env.init()
             done = False
             game_reward = 0
             show_time = 0
-            current_state = game.build_state(game.cars[0])
+            current_state = self.env.build_state(self.env.cars[0])
 
             while not done:  # Game loop
                 pygame.event.get()  # Prevents OS from seeing game as not responding
@@ -365,13 +345,13 @@ class QTrainer:
 
                 draw_screen, show_time = self.draw_screen(game_number, show_time)
                 action = self.agent.get_action(current_state)
-                new_states, rewards, done = game.step([action], dt, draw_screen)
+                new_states, rewards, done = self.env.step([action], dt, draw_screen)
 
                 game_reward += rewards[0]
-                if np.shape(current_state) != self.INPUT_SHAPE:
+                if np.shape(current_state) != self.env.INPUT_SHAPE:
                     print("UNMATCHING CURRENT STATE FOUND")
                     print(current_state)
-                elif np.shape(new_states[0]) != self.INPUT_SHAPE:
+                elif np.shape(new_states[0]) != self.env.OUTPUT_SHAPE:
                     print("UNMATCHING NEW STATE FOUND")
                     print(current_state)
                 self.agent.update_replay_memory((current_state, action, rewards[0], new_states[0], done))
@@ -406,11 +386,9 @@ class QTrainer:
                 aggr_ep_rewards['avg'].append(average_reward)
                 aggr_ep_rewards['min'].append(min_reward)
                 aggr_ep_rewards['max'].append(max_reward)
-
-                # Save model, but only when min reward is greater or equal a set value
-                if min_reward >= self.MIN_REWARD or max_reward >= self.FINISH_REWARD:
-                    self.agent.model.save(
-                        'models/{0}__{1:>7.2f}max_{2:_>7.2f}avg_{3:_>7.2f}min__{4}.model'.format(self.agent.MODEL_NAME, max_reward, average_reward, min_reward, int(time.time())))
+                self.agent.model.save(
+                    f'models/{self.agent.MODEL_NAME}__{max_reward:>7.2f}max_'
+                    f'{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
 
             # Handle epsilon
             if not self.agent.decay_epsilon() and reset_epsilon_game == -1:  # Epsilon was already at lowest value
@@ -424,17 +402,6 @@ class QTrainer:
         self.plot_rewards(aggr_ep_rewards)
         pygame.quit()
         self.plot_rewards(aggr_ep_rewards)
-
-    def generate_tracks(self, amount):
-        for i in range(amount):
-            self.tracks.append(TrackEditor(self.screen).run(self.clock))
-
-    def save_tracks(self):
-        track_string = ""
-        for track in self.tracks:
-            track_string += track.__str__() + "\n\n"
-        with open("Tracks_{}.txt".format(int(time.time())), "w") as text_file:
-            print(track_string, file=text_file)
 
     def handle_keyboard(self, toggle_show, toggle_limit_fps):
         pressed = pygame.key.get_pressed()
@@ -477,25 +444,18 @@ class QTrainer:
         plt.savefig("models/{}-{}.png".format(self.agent.MODEL_NAME, int(time.time())))
         plt.show()
 
-    def fill_agent_memory(self, current_track, dt, toggle_show, toggle_limit_fps):
+    def fill_agent_memory(self, dt, toggle_show, toggle_limit_fps):
         step = 0
         while step < self.agent.REPLAY_MEMORY_SIZE:
-            game = Game(1, current_track, self.screen, self.GATE_REWARD, self.FINISH_REWARD,
-                        self.CRASH_PUNISHMENT, self.FUEL_COST, self.MAX_STALLING_TIME)
+            self.env.init()
             done = False
-            current_state = game.build_state(game.cars[0])
+            current_state = self.env.build_state(self.env.cars[0])
 
             while not done and step < self.agent.REPLAY_MEMORY_SIZE:  # Game loop
                 pygame.event.get()  # Prevents OS from seeing game as not responding
                 toggle_show, toggle_limit_fps = self.handle_keyboard(toggle_show, toggle_limit_fps)
-                action = np.random.randint(0, self.ALLOWED_OUTPUTS)
-                new_states, rewards, done = game.step([action], dt, step % 500 == 0)
-                if np.shape(current_state) != self.INPUT_SHAPE:
-                    print("UNMATCHING CURRENT STATE FOUND")
-                    print(current_state)
-                elif np.shape(new_states[0]) != self.INPUT_SHAPE:
-                    print("UNMATCHING NEW STATE FOUND")
-                    print(current_state)
+                action = np.random.randint(0, self.env.ALLOWED_INPUTS)
+                new_states, rewards, done = self.env.step([action], dt, step % 500 == 0)
                 self.agent.update_replay_memory((current_state, action, rewards[0], new_states[0], done))
                 current_state = new_states[0]
                 step += 1
@@ -517,9 +477,5 @@ os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
 if not os.path.isdir('models'):
     os.makedirs('models')
 
-QTrainer("DrAIve-Prioritised-Targeted-DQN-TrainEvery4", False, False).run(None, None, 2500)  # Run with AI!
-QTrainer("DrAIve-Prioritised-Double-DQN-TrainEvery4", True, False).run(None, None, 2500)  # Run with AI!
-QTrainer("DrAIve-Prioritised-Dueling-DQN-TrainEvery4", False, True).run(None, None, 2500)  # Run with AI!
-QTrainer("DrAIve-Prioritised-Double-Dueling-DQN-TrainEvery4", False, False).run(None, None, 2500)  # Run with AI!
-# QTrainer().run("best_model.model", 1, 100000)  # Run with existing model!
-# ManualPlayer().run(False)  # Run with manual play!
+QTrainer(DrAIve(1, pygame.display.set_mode((QTrainer.DISPLAY_WIDTH, QTrainer.DISPLAY_HEIGHT))),
+         "DrAIve-Prioritised-Targeted-DQN-TrainEvery4", False, False).run(None, None, 2500)

@@ -1,6 +1,7 @@
 import pygame
 import numpy as np
 import os
+import time
 
 from pygame.math import Vector2
 from math import sin, cos, radians, degrees, floor, atan2
@@ -140,10 +141,10 @@ class Car:
     def get_vision_distances(self, vision_track):
         distances = []
         for line in self.vision_lines():
-            intersection = get_closest_vision_intersection(line, vision_track)
+            intersection = Car.get_closest_vision_intersection(line, vision_track)
             if intersection is not None:
                 # Distance normalized for better AI learning
-                distances.append(calc_distance(line[0], intersection) / self.VISION_LINE_LENGTH)
+                distances.append(Car.calc_distance(line[0], intersection) / self.VISION_LINE_LENGTH)
             else:
                 distances.append(1)
         return distances
@@ -151,7 +152,7 @@ class Car:
     def hit_wall(self, current_track):
         for hit_line in self.hitbox_lines():
             for track_line in current_track.get_walls():
-                if calc_intersect(hit_line, track_line) is not None:
+                if Car.calc_intersect(hit_line, track_line) is not None:
                     return True
         return False
 
@@ -159,7 +160,7 @@ class Car:
     def hit_right_reward_gate(self, current_track):
         for hit_line in self.hitbox_lines():
             if self.current_reward_gate < len(current_track.get_reward_gates()) and \
-                    calc_intersect(hit_line, current_track.get_reward_gates()[self.current_reward_gate]) is not None:
+                    Car.calc_intersect(hit_line, current_track.get_reward_gates()[self.current_reward_gate]) is not None:
                 gate_amount = len(current_track.get_reward_gates()) - 1
                 self.wrong_reward_gate = (self.current_reward_gate - 1) % gate_amount
                 self.current_reward_gate = (self.current_reward_gate + 1) % gate_amount
@@ -170,10 +171,48 @@ class Car:
     def hit_wrong_reward_gate(self, current_track):
         self.wrong_reward_gate = self.wrong_reward_gate % (len(current_track.get_reward_gates()) - 1)
         for hit_line in self.hitbox_lines():
-            if calc_intersect(hit_line, current_track.get_reward_gates()[self.wrong_reward_gate]) is not None:
+            if Car.calc_intersect(hit_line, current_track.get_reward_gates()[self.wrong_reward_gate]) is not None:
                 self.wrong_reward_gate = (self.wrong_reward_gate - 1) % (len(current_track.get_reward_gates()) - 1)
                 return True
         return False
+
+    @staticmethod
+    def calc_distance(point1, point2):
+        return np.linalg.norm(np.subtract(point1, point2))
+
+    @staticmethod
+    def min_distance_point(line, point1, point2):
+        origin_point = line[0]
+        if Car.calc_distance(origin_point, point1) < Car.calc_distance(origin_point, point2):
+            return point1
+        return point2
+
+    @staticmethod
+    def calc_intersect(line1, line2):
+        x1, y1 = line1[0]
+        x2, y2 = line1[1]
+        x3, y3 = line2[0]
+        x4, y4 = line2[1]
+        if (x4 - x3) * (y1 - y2) - (x1 - x2) * (y4 - y3) == 0:
+            return None
+        t1 = ((y3 - y4) * (x1 - x3) + (x4 - x3) * (y1 - y3)) / ((x4 - x3) * (y1 - y2) - (x1 - x2) * (y4 - y3))
+        t2 = ((y1 - y2) * (x1 - x3) + (x2 - x1) * (y1 - y3)) / ((x4 - x3) * (y1 - y2) - (x1 - x2) * (y4 - y3))
+
+        if 0 <= t1 <= 1 and 0 <= t2 <= 1:
+            return line1[0] + np.multiply(t1, tuple(np.subtract(line1[1], line1[0])))
+        else:
+            return None
+
+    @staticmethod
+    def get_closest_vision_intersection(vision_line, vision_track):
+        collisions = []
+        for track_line in vision_track.get_walls():
+            collision_location = Car.calc_intersect(vision_line, track_line)
+            if collision_location is not None:
+                collisions.append(collision_location)
+        if len(collisions) == 0:
+            return None
+        return reduce((lambda x, y: Car.min_distance_point(vision_line, x, y)), collisions)
 
 
 class Track:
@@ -242,7 +281,7 @@ class Track:
         track5.walls = (((1352, 193), (1210, 244)), ((1210, 244), (908, 257)), ((908, 257), (674, 224)), ((674, 224), (433, 269)), ((433, 269), (274, 413)), ((274, 413), (209, 522)), ((209, 522), (210, 716)), ((210, 716), (302, 779)), ((302, 779), (394, 679)), ((394, 679), (426, 485)), ((426, 485), (521, 345)), ((521, 345), (665, 312)), ((665, 312), (813, 338)), ((813, 338), (938, 396)), ((938, 396), (1026, 495)), ((1026, 495), (1217, 610)), ((1217, 610), (1446, 596)), ((1446, 596), (1581, 454)), ((1581, 454), (1572, 317)), ((1572, 317), (1511, 245)), ((1511, 245), (1352, 193)), ((1295, 63), (1144, 97)), ((1144, 97), (891, 96)), ((891, 96), (648, 76)), ((648, 76), (335, 150)), ((335, 150), (139, 288)), ((139, 288), (35, 462)), ((35, 462), (32, 701)), ((32, 701), (65, 870)), ((65, 870), (186, 942)), ((186, 942), (310, 968)), ((310, 968), (410, 930)), ((410, 930), (479, 866)), ((479, 866), (550, 746)), ((550, 746), (572, 638)), ((572, 638), (630, 559)), ((630, 559), (765, 569)), ((765, 569), (847, 655)), ((847, 655), (1182, 821)), ((1182, 821), (1476, 798)), ((1476, 798), (1701, 760)), ((1701, 760), (1820, 511)), ((1820, 511), (1795, 291)), ((1795, 291), (1733, 161)), ((1733, 161), (1558, 52)), ((1558, 52), (1295, 63)))
         track5.reward_gates = (((1544, 490), (1780, 589)), ((1575, 389), (1803, 383)), ((1539, 277), (1736, 163)), ((1468, 228), (1556, 51)), ((1351, 189), (1291, 63)), ((1209, 248), (1148, 97)), ((941, 255), (918, 93)), ((675, 222), (649, 75)), ((434, 268), (335, 151)), ((311, 381), (140, 287)), ((215, 517), (32, 458)), ((210, 636), (31, 701)), ((209, 716), (67, 867)), ((302, 778), (311, 958)), ((395, 680), (548, 748)), ((415, 549), (565, 633)), ((519, 344), (630, 557)), ((665, 310), (759, 565)), ((811, 337), (842, 649)), ((1022, 494), (1018, 731)), ((1214, 610), (1182, 813)), ((1450, 596), (1565, 779)), ((1544, 490), (1780, 589)) )
 
-        return track1, track2, track3, track4, track5
+        return [track1, track2, track3, track4, track5]
 
 
 class TrackEditor:
@@ -253,8 +292,9 @@ class TrackEditor:
         self.screen = screen
         self.exit = False
         self.direction_arrow_size = 80
+        self.clock = pygame.time.Clock()
 
-    def run(self, clock):
+    def run(self):
         edit_track = Track()
         stage = 0
         current_line = None
@@ -300,7 +340,7 @@ class TrackEditor:
             self.draw_start(edit_track)
 
             pygame.display.update()
-            clock.tick(self.TICKS)
+            self.clock.tick(self.TICKS)
         return edit_track
 
     @staticmethod
@@ -331,8 +371,8 @@ class TrackEditor:
                 edit_track.car_start_location = pygame.mouse.get_pos()
                 print(edit_track.car_start_location)
             elif event.type == pygame.MOUSEBUTTONUP:
-                edit_track.car_start_angle = -angle_between_points(edit_track.car_start_location,
-                                                                   pygame.mouse.get_pos())
+                edit_track.car_start_angle = -TrackEditor.angle_between_points(edit_track.car_start_location,
+                                                                               pygame.mouse.get_pos())
                 return 1
         return 0
 
@@ -349,6 +389,12 @@ class TrackEditor:
                     current_line = None
 
         return current_line
+
+    @staticmethod
+    def angle_between_points(point1, point2):
+        dx = point2[0] - point1[0]
+        dy = point2[1] - point1[1]
+        return degrees(atan2(dy, dx))
 
     def draw_start(self, edit_track):
         if edit_track.car_start_location is not None:
@@ -390,7 +436,7 @@ class TrackDrawer:
         for car in cars:
             for line in car.vision_lines():
                 pygame.draw.line(screen, WHITE, line[0], line[1])
-                vision_point = get_closest_vision_intersection(line, track)
+                vision_point = Car.get_closest_vision_intersection(line, track)
                 if vision_point is not None:
                     integer_point = (int(vision_point[0]), int(vision_point[1]))
                     pygame.draw.circle(screen, RED, integer_point, 8)
@@ -401,24 +447,36 @@ class TrackDrawer:
             screen.blit(rotated, car.position * car.ppu - (rect.width / 2, rect.height / 2))
 
 
-class Game(TrackDrawer):
-    def __init__(self, car_amount, track, screen, gate_reward, finish_reward,
-                 crash_punishment, fuel_cost, max_stalling_time):
-        self.track = track
-        self.screen = screen
-        self.gate_reward = gate_reward
-        self.finish_reward = finish_reward
-        self.crash_punishment = crash_punishment
-        self.fuel_cost = fuel_cost
-        self.max_stalling_time = max_stalling_time
+class DrAIve(TrackDrawer):
+    # These need to remain the same after AI has started training
+    GATE_REWARD = 0.1
+    FINISH_REWARD = 1
+    CRASH_PUNISHMENT = -1
+    FUEL_COST = 0.0001
+    MAX_STALLING_TIME = 30
 
+    OUTPUT_SHAPE = (12,)
+    ALLOWED_INPUTS = 9
+
+    def __init__(self, car_amount, screen):
+        self.screen = screen
         self.car_scale, self.car_image, self.ppu = self.load_car_image()
 
         self.cars = []
         for i in range(car_amount):
             self.cars.append(self.build_car())
 
+        self.tracks = Track.set_standard_tracks()
+        self.track = self.tracks[1]
+
         self.stall_time = 0
+
+    def init(self, track_nr):
+        self.track = self.tracks[track_nr]
+        self.stall_time = 0
+
+        for i in range(len(self.cars)):
+            self.cars.append(self.build_car())
 
     def step(self, actions, dt, draw):
         for i in range(len(self.cars)):
@@ -429,10 +487,10 @@ class Game(TrackDrawer):
         for i in range(len(self.cars)):
             results.append(self.rate_action(self.cars[i]))
 
-        if results[0][0] != self.gate_reward:
+        if results[0][0] != self.GATE_REWARD:
             self.stall_time += dt
-            if self.stall_time > self.max_stalling_time:
-                results[0] = (self.crash_punishment, True)
+            if self.stall_time > self.MAX_STALLING_TIME:
+                results[0] = (self.CRASH_PUNISHMENT, True)
         else:
             self.stall_time = 0
 
@@ -449,15 +507,15 @@ class Game(TrackDrawer):
 
     def rate_action(self, car):  # Returns score and whether the level should be reset
         if car.hit_wall(self.track):
-            return self.crash_punishment, True
+            return self.CRASH_PUNISHMENT, True
         elif car.hit_right_reward_gate(self.track):
             if car.current_reward_gate % len(self.track.get_reward_gates()) == 0:
-                return self.finish_reward, False  # True  # CURRENTLY DOESNT STOP AFTER COMPLETING TRACK
-            return self.gate_reward, False
+                return self.FINISH_REWARD, False  # True  # CURRENTLY DOESNT STOP AFTER COMPLETING TRACK
+            return self.GATE_REWARD, False
         elif car.hit_wrong_reward_gate(self.track):
-            return -self.gate_reward, False
+            return -self.GATE_REWARD, False
         else:
-            return self.fuel_cost, False
+            return self.FUEL_COST, False
 
     def build_state(self, car):
         rotated_velocity = car.velocity.rotate(car.angle)
@@ -469,6 +527,17 @@ class Game(TrackDrawer):
     def build_car(self):
         return Car(self.track.car_start_location[0] / self.ppu, self.track.car_start_location[1] / self.ppu,
                    self.car_scale, self.ppu, self.car_image, self.track.car_start_angle)
+
+    def generate_tracks(self, amount):
+        for i in range(amount):
+            self.tracks.append(TrackEditor(self.screen).run())
+
+    def save_tracks(self):
+        track_string = ""
+        for track in self.tracks:
+            track_string += track.__str__() + "\n\n"
+        with open("Tracks_{}.txt".format(int(time.time())), "w") as text_file:
+            print(track_string, file=text_file)
 
     @staticmethod
     def load_car_image():
@@ -496,16 +565,17 @@ class ManualPlayer:
         self.tracks = []
 
     def run(self, make_track):
+        game = DrAIve([Car(0, 0, 0, 0, None)], self.screen)
         if make_track:
-            track = TrackEditor(self.screen).run(self.clock)
+            game.generate_tracks(1)
+            game.init(0)
         else:
-            track = Track.set_standard_tracks()[0]
-        game = Game([Car(0, 0, 0, 0, None)], track, self.screen, 0, 0, 0, 0, None)
+            game.init(1)
         done = False
         while not done:
             pressed = pygame.key.get_pressed()
             action = self.keys_to_choice(pressed)
-            _, _, done = game.step([action], self.clock.tick(self.TICKS))
+            _, _, done = game.step([action], self.clock.tick(self.TICKS), True)
 
     @staticmethod
     def keys_to_choice(pressed):
@@ -530,51 +600,3 @@ class ManualPlayer:
                 return 5
             else:
                 return 4
-
-
-def calc_distance(point1, point2):
-    return np.linalg.norm(np.subtract(point1, point2))
-
-
-def min_distance_point(line, point1, point2):
-    origin_point = line[0]
-    if calc_distance(origin_point, point1) < calc_distance(origin_point, point2):
-        return point1
-    return point2
-
-
-def calc_intersect(line1, line2):
-    x1, y1 = line1[0]
-    x2, y2 = line1[1]
-    x3, y3 = line2[0]
-    x4, y4 = line2[1]
-    if (x4 - x3) * (y1 - y2) - (x1 - x2) * (y4 - y3) == 0:
-        return None
-    t1 = ((y3 - y4) * (x1 - x3) + (x4 - x3) * (y1 - y3)) / ((x4 - x3) * (y1 - y2) - (x1 - x2) * (y4 - y3))
-    t2 = ((y1 - y2) * (x1 - x3) + (x2 - x1) * (y1 - y3)) / ((x4 - x3) * (y1 - y2) - (x1 - x2) * (y4 - y3))
-
-    if 0 <= t1 <= 1 and 0 <= t2 <= 1:
-        return line1[0] + np.multiply(t1, tuple(np.subtract(line1[1], line1[0])))
-    else:
-        return None
-
-
-def get_closest_vision_intersection(vision_line, vision_track):
-    collisions = []
-    for track_line in vision_track.get_walls():
-        collision_location = calc_intersect(vision_line, track_line)
-        if collision_location is not None:
-            collisions.append(collision_location)
-    if len(collisions) == 0:
-        return None
-    return reduce((lambda x, y: min_distance_point(vision_line, x, y)), collisions)
-
-
-def angle_between_points(point1, point2):
-    dx = point2[0] - point1[0]
-    dy = point2[1] - point1[1]
-    return degrees(atan2(dy, dx))
-
-
-def normalize_angle(angle):
-    return ((angle % 360) - 180) / 180
