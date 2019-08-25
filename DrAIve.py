@@ -7,6 +7,8 @@ from pygame.math import Vector2
 from math import sin, cos, radians, degrees, floor, atan2
 from functools import reduce
 
+from ReinforcementLearning import AgentTrainer
+
 
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
@@ -290,6 +292,7 @@ class TrackEditor:
     def __init__(self, screen):
         pygame.display.set_caption('Level Editor')
         self.screen = screen
+        self.screen.set_alpha(None)
         self.exit = False
         self.direction_arrow_size = 80
         self.clock = pygame.time.Clock()
@@ -458,27 +461,47 @@ class DrAIve(TrackDrawer):
     OUTPUT_SHAPE = (12,)
     ALLOWED_INPUTS = 9
 
-    def __init__(self, car_amount, screen):
-        self.screen = screen
-        self.car_scale, self.car_image, self.ppu = self.load_car_image()
+    SHOW_FPS_EVERY = 30
+    STANDARD_TRACK = 1
 
-        self.cars = []
-        for i in range(car_amount):
-            self.cars.append(self.build_car())
+    DISPLAY_WIDTH = 1920
+    DISPLAY_HEIGHT = 1080
+
+    def __init__(self, car_amount):
+        pygame.init()
+        self.screen = pygame.display.set_mode((self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT))
+        self.car_scale, self.car_image, self.ppu = self.load_car_image()
 
         self.tracks = Track.set_standard_tracks()
         self.track = self.tracks[1]
 
-        self.stall_time = 0
+        self.cars = []
+        for i in range(car_amount):
+            self.cars.append(self.build_car())
+        self.screen, self.clock = None, None
+        self.reset()
 
-    def init(self, track_nr):
-        self.track = self.tracks[track_nr]
         self.stall_time = 0
+        self.show_step = 0
+
+    def reset(self):
+        pygame.init()
+        pygame.display.set_caption('DrAIve')
+        self.screen = pygame.display.set_mode((self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT))
+        self.screen.set_alpha(None)
+        self.clock = pygame.time.Clock()
+        self.track = self.tracks[self.STANDARD_TRACK]
+        self.stall_time = 0
+        self.show_step = 0
 
         for i in range(len(self.cars)):
-            self.cars.append(self.build_car())
+            self.cars[i] = self.build_car()
 
-    def step(self, actions, dt, draw):
+        return self.build_state(self.cars[0])
+
+    def step(self, actions, dt=1/AgentTrainer.TICKS):
+        pygame.event.get()  # Prevents OS from seeing game as not responding
+
         for i in range(len(self.cars)):
             self.cars[i].send_input(actions[i])
             self.cars[i].update(dt)
@@ -500,8 +523,17 @@ class DrAIve(TrackDrawer):
         end_game = results[0][1]
         rewards = [i[0] for i in results]
 
-        if draw:
-            self.draw_track(self.screen, self.cars, self.track)
+        self.clock.tick()
+
+        if not self.show_step % self.SHOW_FPS_EVERY:
+            self.screen.fill(BLACK)
+            rect = self.screen.blit(pygame.font.SysFont('Comic Sans MS', 25).render(
+                "Rendering in quick mode with {}fps".format(1000 / self.clock.get_time()),
+                False, WHITE), (10, 10))
+            pygame.display.update(rect)
+            self.show_step = 0
+
+        self.show_step += 1
 
         return new_states, rewards, end_game
 
@@ -523,6 +555,9 @@ class DrAIve(TrackDrawer):
         # if car.hit_wall(self.track):
         #     return np.zeros(np.shape(state))
         return state
+
+    def render(self):
+        self.draw_track(self.screen, self.cars, self.track)
 
     def build_car(self):
         return Car(self.track.car_start_location[0] / self.ppu, self.track.car_start_location[1] / self.ppu,
@@ -551,31 +586,32 @@ class DrAIve(TrackDrawer):
         ppu = 32 / car_scale
         return car_scale, car_image, ppu
 
+    @staticmethod
+    def stop():
+        pygame.quit()
+
 
 class ManualPlayer:
     TICKS = 60
 
-    DISPLAY_WIDTH = 1920
-    DISPLAY_HEIGHT = 1080
-
     def __init__(self):
         pygame.init()
-        self.screen = pygame.display.set_mode((self.DISPLAY_WIDTH, self.DISPLAY_HEIGHT))
         self.clock = pygame.time.Clock()
         self.tracks = []
 
     def run(self, make_track):
-        game = DrAIve([Car(0, 0, 0, 0, None)], self.screen)
+        game = DrAIve([Car(0, 0, 0, 0, None)])
         if make_track:
             game.generate_tracks(1)
-            game.init(0)
+            game.reset(0)
         else:
-            game.init(1)
+            game.reset(1)
         done = False
         while not done:
             pressed = pygame.key.get_pressed()
             action = self.keys_to_choice(pressed)
-            _, _, done = game.step([action], self.clock.tick(self.TICKS), True)
+            _, _, done = game.step([action], self.clock.tick(self.TICKS))
+            game.render()
 
     @staticmethod
     def keys_to_choice(pressed):

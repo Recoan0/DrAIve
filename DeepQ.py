@@ -1,9 +1,6 @@
-import pygame
-import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import time
-import random
 import os
 
 from keras import backend as K, Input
@@ -12,13 +9,7 @@ from keras.layers import Dense, Lambda, Subtract, Add
 from keras.optimizers import Adam
 
 from DrAIve import DrAIve
-
-
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-RED = (255, 0, 0)
-GREEN = (0, 255, 0)
-BLUE = (0, 0, 255)
+from ReinforcementLearning import AgentTrainer
 
 
 class SumTree(object):
@@ -158,9 +149,8 @@ class DQNAgent:
     REPLAY_MEMORY_SIZE = 50000  # How many last steps to keep for model training
     MIN_REPLAY_MEMORY_SIZE = 10000  # Minimum number of steps in memory to start training
     MINIBATCH_STANDARD_SIZE = 32  # How many steps/samples to use for training
-    DISCOUNT = 0.99
+    GAMMA = 0.99
     UPDATE_TARGET_EVERY = 5000  # Amount of steps
-    MEMORY_FRACTION = 0.20
     LEARNING_RATE = 0.001
 
     # Exploration settings, current settings make epsilon reset about every 1000 runs
@@ -168,7 +158,7 @@ class DQNAgent:
     MIN_EPSILON = 0.01
 
     def __init__(self, model_name, double, dueling, input_shape, output_options, fit_every_steps):
-        self.MODEL_NAME = model_name
+        self.model_name = model_name
         self.double = double
         self.dueling = dueling
         self.input_shape = input_shape
@@ -253,8 +243,8 @@ class DQNAgent:
         if self.double:
             next_move_list = self.model.predict(new_current_states)  # FOR DOUBLE DQN
 
-        X = []
-        y = []
+        states = []
+        values = []
         absolute_errors = []
 
         for index, (current_state, action, reward, new_current_state, done) in enumerate(minibatch):
@@ -266,7 +256,7 @@ class DQNAgent:
                     model_selected_action = np.argmax(next_move_list[index])  # action selected by online model
                     future_q = future_qs_list[index][model_selected_action]  # action evaluated by target model
 
-                new_q = reward + self.DISCOUNT * future_q
+                new_q = reward + self.GAMMA * future_q
             else:
                 new_q = reward
 
@@ -275,11 +265,11 @@ class DQNAgent:
             absolute_errors.append(abs(current_qs[action] - new_q))
             current_qs[action] = new_q
 
-            X.append(current_state)
-            y.append(current_qs)
+            states.append(current_state)
+            values.append(current_qs)
 
         self.replay_memory.batch_update(tree_idx, absolute_errors)
-        self.model.fit(np.array(X), np.array(y), batch_size=self.minibatch_size, verbose=0, shuffle=False)
+        self.model.fit(np.array(states), np.array(values), batch_size=self.minibatch_size, verbose=0, shuffle=False)
 
         if step >= self.UPDATE_TARGET_EVERY:
             print("Updating target model!")
@@ -287,31 +277,21 @@ class DQNAgent:
             return 0
         return step + 1
 
+    def save(self, average_reward, min_reward, max_reward):
+        self.model.save(
+            f'models/{self.model_name}__{max_reward:>7.2f}max_'
+            f'{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
 
-class QTrainer:
+
+class DQNAgentTrainer(AgentTrainer):
     TRACK_AMOUNT = 5
-    TICKS = 30  # Number of steps per second the AI is asked to give an action
-
-    DISPLAY_WIDTH = 1920
-    DISPLAY_HEIGHT = 1080
-    SHOW_EVERY = 50
-    SHOW_FPS_EVERY = 1
-
     CONTINUE_AFTER_EPSILON_TARGET = 450
-    AGGREGATE_STATS_EVERY = 50  # episodes
     FIT_EVERY_STEPS = 4
-
     STANDARD_TRACKS = True
 
     def __init__(self, env, model_name, double, dueling):
-        pygame.init()
-        self.screen = env.screen
-        self.screen.set_alpha(None)
-        self.clock = pygame.time.Clock()
-        self.env = env
+        AgentTrainer.__init__(self, env)
         self.agent = DQNAgent(model_name, double, dueling, env.OUTPUT_SHAPE, env.ALLOWED_INPUTS, self.FIT_EVERY_STEPS)
-        self.show_track_forced = True
-        self.limit_fps = False
 
     def run(self, load_model_name, epsilon, episodes):
         if load_model_name is not None:
@@ -321,39 +301,27 @@ class QTrainer:
         game_rewards = []
         reset_epsilon_game = -1
         aggr_ep_rewards = {'ep': [], 'avg': [], 'min': [], 'max': []}
-        pygame.display.set_caption('DrAIve')
 
         toggle_show = False
         toggle_limit_fps = False
         fit_network_counter = 0
         update_target_counter = 0
 
-        dt = 1 / self.TICKS  # Standard delta time for consistent AI movement
-
-        self.fill_agent_memory(dt, toggle_show, toggle_limit_fps)
+        self.fill_agent_memory(toggle_show, toggle_limit_fps)
 
         while game_number <= episodes:
-            self.env.init()
             done = False
             game_reward = 0
-            show_time = 0
-            current_state = self.env.build_state(self.env.cars[0])
+            current_state = self.env.reset()
 
             while not done:  # Game loop
-                pygame.event.get()  # Prevents OS from seeing game as not responding
+                if self.show_track_forced:
+                    self.env.render()
                 toggle_show, toggle_limit_fps = self.handle_keyboard(toggle_show, toggle_limit_fps)
-
-                draw_screen, show_time = self.draw_screen(game_number, show_time)
                 action = self.agent.get_action(current_state)
-                new_states, rewards, done = self.env.step([action], dt, draw_screen)
+                new_states, rewards, done = self.env.step([action])
 
                 game_reward += rewards[0]
-                if np.shape(current_state) != self.env.INPUT_SHAPE:
-                    print("UNMATCHING CURRENT STATE FOUND")
-                    print(current_state)
-                elif np.shape(new_states[0]) != self.env.OUTPUT_SHAPE:
-                    print("UNMATCHING NEW STATE FOUND")
-                    print(current_state)
                 self.agent.update_replay_memory((current_state, action, rewards[0], new_states[0], done))
 
                 if fit_network_counter % self.FIT_EVERY_STEPS == 0:
@@ -361,12 +329,6 @@ class QTrainer:
                     update_target_counter = self.agent.train(update_target_counter)
                 fit_network_counter += 1
                 current_state = new_states[0]
-
-                if draw_screen:
-                    if self.limit_fps:
-                        self.clock.tick(self.TICKS)
-                    else:
-                        self.clock.tick()
 
             print("Game number: {}, reward: {}, epsilon: {}".format(game_number, game_reward, self.agent.epsilon))
 
@@ -378,17 +340,9 @@ class QTrainer:
             # Append game reward to a list and log stats (every given number of games)
             game_rewards.append(game_reward)
             if not game_number % self.AGGREGATE_STATS_EVERY or game_number == 1:
-                average_reward = sum(game_rewards[-self.AGGREGATE_STATS_EVERY:]) \
-                                 / len(game_rewards[-self.AGGREGATE_STATS_EVERY:])
-                min_reward = min(game_rewards[-self.AGGREGATE_STATS_EVERY:])
-                max_reward = max(game_rewards[-self.AGGREGATE_STATS_EVERY:])
-                aggr_ep_rewards['ep'].append(game_number)
-                aggr_ep_rewards['avg'].append(average_reward)
-                aggr_ep_rewards['min'].append(min_reward)
-                aggr_ep_rewards['max'].append(max_reward)
-                self.agent.model.save(
-                    f'models/{self.agent.MODEL_NAME}__{max_reward:>7.2f}max_'
-                    f'{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
+                average_reward, min_reward, max_reward = \
+                    self.update_aggregate_rewards(game_number, game_rewards, aggr_ep_rewards)
+                self.agent.save(average_reward, min_reward, max_reward)
 
             # Handle epsilon
             if not self.agent.decay_epsilon() and reset_epsilon_game == -1:  # Epsilon was already at lowest value
@@ -399,63 +353,20 @@ class QTrainer:
                 self.agent.epsilon = 1
             game_number += 1
 
-        self.plot_rewards(aggr_ep_rewards)
-        pygame.quit()
-        self.plot_rewards(aggr_ep_rewards)
+        self.plot_rewards(aggr_ep_rewards, self.agent.model_name)
+        self.env.stop()
 
-    def handle_keyboard(self, toggle_show, toggle_limit_fps):
-        pressed = pygame.key.get_pressed()
-        if pressed[pygame.K_d]:
-            if not toggle_show:
-                self.show_track_forced = not self.show_track_forced
-                toggle_show = True
-        else:
-            toggle_show = False
-
-        if pressed[pygame.K_l]:
-            if not toggle_limit_fps:
-                self.limit_fps = not self.limit_fps
-                toggle_limit_fps = True
-        else:
-            toggle_limit_fps = False
-
-        return toggle_show, toggle_limit_fps
-
-    def draw_screen(self, game_number, show_time):
-        if self.show_track_forced or not game_number % self.SHOW_EVERY:
-            return True, show_time
-        else:
-            self.clock.tick()
-            show_time += self.clock.get_time() / 1000
-            if show_time > self.SHOW_FPS_EVERY:
-                self.screen.fill(BLACK)
-                rect = self.screen.blit(pygame.font.SysFont('Comic Sans MS', 25).render(
-                    "Rendering in quick mode with {}fps".format(1000 / self.clock.get_time()),
-                    False, WHITE), (10, 10))
-                pygame.display.update(rect)
-                show_time = 0
-            return False, show_time
-
-    def plot_rewards(self, aggr_ep_rewards):
-        plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['avg'], label="avg")
-        plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['min'], label="min")
-        plt.plot(aggr_ep_rewards['ep'], aggr_ep_rewards['max'], label="max")
-        plt.legend(loc=4)
-        plt.savefig("models/{}-{}.png".format(self.agent.MODEL_NAME, int(time.time())))
-        plt.show()
-
-    def fill_agent_memory(self, dt, toggle_show, toggle_limit_fps):
+    def fill_agent_memory(self, toggle_show, toggle_limit_fps):
         step = 0
-        while step < self.agent.REPLAY_MEMORY_SIZE:
-            self.env.init()
+        while step < self.agent.MIN_REPLAY_MEMORY_SIZE:
+            self.env.reset()
             done = False
             current_state = self.env.build_state(self.env.cars[0])
 
-            while not done and step < self.agent.REPLAY_MEMORY_SIZE:  # Game loop
-                pygame.event.get()  # Prevents OS from seeing game as not responding
+            while not done and step < self.agent.MIN_REPLAY_MEMORY_SIZE:  # Game loop
                 toggle_show, toggle_limit_fps = self.handle_keyboard(toggle_show, toggle_limit_fps)
                 action = np.random.randint(0, self.env.ALLOWED_INPUTS)
-                new_states, rewards, done = self.env.step([action], dt, step % 500 == 0)
+                new_states, rewards, done = self.env.step([action])
                 self.agent.update_replay_memory((current_state, action, rewards[0], new_states[0], done))
                 current_state = new_states[0]
                 step += 1
@@ -464,18 +375,4 @@ class QTrainer:
                     print("Memory filled with {} steps".format(step))
 
 
-# For repeatable results
-random.seed(1)
-np.random.seed(1)
-tf.set_random_seed(1)
-sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))  # Log which device is being used for Deep learning
-
-# Render window in correct position on screen
-os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
-
-# Create folder for models
-if not os.path.isdir('models'):
-    os.makedirs('models')
-
-QTrainer(DrAIve(1, pygame.display.set_mode((QTrainer.DISPLAY_WIDTH, QTrainer.DISPLAY_HEIGHT))),
-         "DrAIve-Prioritised-Targeted-DQN-TrainEvery4", False, False).run(None, None, 2500)
+DQNAgentTrainer(DrAIve(1), "DrAIve-Prioritised-Targeted-DQN-TrainEvery4", False, False).run(None, None, 2500)
