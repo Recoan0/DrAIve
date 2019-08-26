@@ -24,12 +24,8 @@ class Agent:
     def predict(self, state):
         return self.model.predict(self.reshape(state))
 
-    @staticmethod
-    def reshape(x):
-        if len(x.shape) < 3:
-            return np.expand_dims(x, axis=0)
-        else:
-            return x
+    def reshape(self, x):
+        return np.array(x).reshape(-1, *self.input_shape)
 
 
 class Actor(Agent):
@@ -52,6 +48,7 @@ class Actor(Agent):
         states = self.model.input
         actions_placeholder = K.placeholder(shape=(None, self.output_count))
         advantages_placeholder = K.placeholder(shape=(None,))
+
         weighted_actions = K.sum(actions_placeholder * self.model.output, axis=1)
         action_losses = K.log(weighted_actions + 1e-10) * K.stop_gradient(advantages_placeholder)
         entropy = K.sum(self.model.output * K.log(self.model.output + 1e-10), axis=1)
@@ -99,7 +96,7 @@ class A2CAgent:
         self.critic = Critic(input_shape, output_count, self.LEARNING_RATE)
 
     def get_action(self, state):
-        return np.random.choice(np.arange(self.input_shape[0]), 1, p=self.actor.predict(state))
+        return np.random.choice(np.arange(self.output_count), 1, p=self.actor.predict(state).ravel())[0]
 
     def calc_discounted_rewards(self, rewards):
         discounted_rewards = np.zeros_like(rewards)
@@ -152,13 +149,13 @@ class A2CAgentTrainer(AgentTrainer):
                     self.env.render()
                 toggle_show, toggle_limit_fps = self.handle_keyboard(toggle_show, toggle_limit_fps)
                 action = self.agent.get_action(current_state)
-                new_states, rewards, done = self.env.step([action])
+                new_states, action_rewards, done = self.env.step([action])
 
-                actions.append(to_categorical(actions[0], self.agent.output_count))
-                rewards.append(rewards[0])
+                actions.append(to_categorical(action, self.agent.output_count))
+                rewards.append(action_rewards[0])
                 states.append(current_state)
 
-                game_reward += rewards[0]
+                game_reward += action_rewards[0]
                 current_state = new_states[0]
 
             self.agent.train_models(states, actions, rewards)
