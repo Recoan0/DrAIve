@@ -3,7 +3,6 @@ import time
 
 from keras import Input
 from keras.optimizers import Adam
-from keras.utils import to_categorical
 from keras.layers import Dense
 from keras.models import Model
 
@@ -14,12 +13,12 @@ from ReinforcementLearning import AgentTrainer
 class A2CAgent:
     GAMMA = 0.99
     LEARNING_RATE = 0.001
-    TRAIN_STEPS = 50
 
-    def __init__(self, model_name, input_shape, output_count):
+    def __init__(self, model_name, input_shape, output_count, training_steps):
         self.model_name = model_name
         self.input_shape = input_shape
         self.output_count = output_count
+        self.training_steps = training_steps
 
         self.actor = self.create_actor(input_shape, output_count)
         self.critic = self.create_critic(input_shape)
@@ -77,9 +76,9 @@ class A2CAgent:
 
 
 class A2CAgentTrainer(AgentTrainer):
-    def __init__(self, env, model_name):
+    def __init__(self, env, model_name, training_steps):
         AgentTrainer.__init__(self, env)
-        self.agent = A2CAgent(model_name, env.OUTPUT_SHAPE, env.ALLOWED_INPUTS)
+        self.agent = A2CAgent(model_name, env.OUTPUT_SHAPE, env.ALLOWED_INPUTS, training_steps)
 
     def run(self, episodes):
         game_number = 1
@@ -109,7 +108,7 @@ class A2CAgentTrainer(AgentTrainer):
                 next_states.append(new_states[0])
                 dones.append(done)
 
-                if not len(states) % self.agent.TRAIN_STEPS:
+                if not len(states) % self.agent.training_steps:
                     self.agent.train(states, actions, rewards, next_states, dones)
                     actions, states, rewards, next_states, dones = [], [], [], [], []
 
@@ -131,4 +130,8 @@ class A2CAgentTrainer(AgentTrainer):
         self.env.stop()
 
 
-A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic").run(2500)
+A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 25).run(2500)
+A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 100).run(2500)
+A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 250).run(2500)
+A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 500).run(2500)
+A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 1000).run(2500)
