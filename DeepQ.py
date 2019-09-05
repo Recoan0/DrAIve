@@ -1,7 +1,6 @@
 import numpy as np
 import tensorflow as tf
 import time
-import os
 
 from keras import backend as K, Input
 from keras.models import load_model, Model
