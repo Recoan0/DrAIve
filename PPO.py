@@ -60,11 +60,15 @@ class PPOAgent:
     def train(self, states, actions, rewards, next_states, dones):
         targets = np.zeros((len(states), 1))
         advantages = np.zeros((len(states), self.output_count))
+        predictions = np.zeros((len(states), 1))
+
         for i in range(len(states)):
             reshaped_state = np.array(states[i]).reshape(-1, *self.input_shape)
             reshaped_next_state = np.array(next_states[i]).reshape(-1, *self.input_shape)
             value = self.critic.predict(reshaped_state)
             next_value = self.critic.predict(reshaped_next_state)
+
+            predictions[i] = value
 
             if dones[i]:
                 advantages[i][actions[i]] = rewards[i] - value
@@ -73,7 +77,7 @@ class PPOAgent:
                 advantages[i][actions[i]] = rewards[i] + self.GAMMA * next_value - value
                 targets[i][0] = rewards[i] + self.GAMMA * next_value
 
-        self.actor.fit(np.array(states), advantages, verbose=0, epochs=self.EPOCHS)
+        self.actor.fit([np.array(states), advantages, predictions], advantages, verbose=0, epochs=self.EPOCHS)
         self.critic.fit(np.array(states), targets, verbose=0)
 
     def ppo_loss(self, advantage, old_prediction):
