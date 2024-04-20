@@ -130,8 +130,9 @@ class A2CAgentTrainer(AgentTrainer):
         self.env.stop()
 
 
-A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 25).run(2500)
-A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 100).run(2500)
-A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 250).run(2500)
-A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 500).run(2500)
-A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 1000).run(2500)
+# A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 25).run(2500)
+A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 50).run(2500)
+# A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 100).run(2500)
+# A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 250).run(2500)
+# A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 500).run(2500)
+# A2CAgentTrainer(DrAIve(1), "DrAIve-A2C-Basic", 1000).run(2500)

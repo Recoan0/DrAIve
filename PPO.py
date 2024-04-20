@@ -24,20 +24,22 @@ class PPOAgent:
         self.output_count = output_count
         self.training_steps = training_steps
 
+        self.dummy_actions = np.zeros((1, output_count))
+        self.dummy_value = np.zeros((1, 1))
+
         self.actor = self.create_actor(input_shape, output_count)
         self.critic = self.create_critic(input_shape)
 
     def create_actor(self, input_shape, output_count):
         input = Input(shape=input_shape)
+        advantage = Input((1,))
+        old_prediction = Input((output_count,))
         actor_dense = Dense(64, activation='relu')(input)
         actor_dense2 = Dense(128, activation='relu')(actor_dense)
         actor_dense3 = Dense(64, activation='relu')(actor_dense2)
         output = Dense(output_count, activation="softmax")(actor_dense3)
 
-        advantage = Input((1,))
-        old_prediction = Input((output_count,))
-
-        actor = Model(input, output)
+        actor = Model([input, advantage, old_prediction], output)
         actor.compile(optimizer=Adam(lr=self.LEARNING_RATE), loss=[self.ppo_loss(advantage=advantage,
                                                                                  old_prediction=old_prediction)])
         return actor
@@ -54,12 +56,12 @@ class PPOAgent:
         return critic
 
     def get_action(self, state):
-        policy = self.actor.predict(np.array(state).reshape(-1, *self.input_shape)).ravel()
-        return np.random.choice(np.arange(self.output_count), 1, p=policy)[0]
+        policy = self.actor.predict([np.array(state).reshape(-1, *self.input_shape), self.dummy_value, self.dummy_actions]).ravel()
+        return np.random.choice(np.arange(self.output_count), 1, p=policy)[0], policy
 
-    def train(self, states, actions, rewards, next_states, dones):
+    def train(self, states, actions, policy, rewards, next_states, dones):
         targets = np.zeros((len(states), 1))
-        advantages = np.zeros((len(states), self.output_count))
+        advantages = np.zeros((len(states), 1))
         predictions = np.zeros((len(states), 1))
 
         for i in range(len(states)):
@@ -71,19 +73,19 @@ class PPOAgent:
             predictions[i] = value
 
             if dones[i]:
-                advantages[i][actions[i]] = rewards[i] - value
+                advantages[i] = rewards[i] - value
                 targets[i][0] = rewards[i]
             else:
-                advantages[i][actions[i]] = rewards[i] + self.GAMMA * next_value - value
+                advantages[i] = rewards[i] + self.GAMMA * next_value - value
                 targets[i][0] = rewards[i] + self.GAMMA * next_value
 
-        self.actor.fit([np.array(states), advantages, predictions], advantages, verbose=0, epochs=self.EPOCHS)
+        self.actor.fit([np.array(states), advantages, np.array(policy)], np.array(actions), verbose=0, epochs=self.EPOCHS)
         self.critic.fit(np.array(states), targets, verbose=0)
 
     def ppo_loss(self, advantage, old_prediction):
         def loss(y_true, y_pred):
-            probability = y_true * y_pred
-            old_probability = y_true * old_prediction
+            probability = K.sum(y_true * y_pred, axis=-1)
+            old_probability = K.sum(y_true * old_prediction, axis=-1)
             ratio = probability/(old_probability + 1e-10)
             return -K.mean(K.minimum(ratio * advantage, K.clip(ratio, 1 - self.EPSILON, 1 + self.EPSILON) * advantage) +
                            self.ENTROPY_SCALAR * -(probability * K.log(probability + 1e-10)))
@@ -109,7 +111,7 @@ class PPOAgentTrainer(AgentTrainer):
         toggle_show = False
         toggle_limit_fps = False
 
-        actions, states, rewards, next_states, dones = [], [], [], [], []
+        states, actions, policies, rewards, next_states, dones = [], [], [], [], [], []
 
         while game_number <= episodes:
             done = False
@@ -120,18 +122,19 @@ class PPOAgentTrainer(AgentTrainer):
                 if self.show_track_forced:
                     self.env.render()
                 toggle_show, toggle_limit_fps = self.handle_keyboard(toggle_show, toggle_limit_fps)
-                action = self.agent.get_action(current_state)
+                action, policy = self.agent.get_action(current_state)
                 new_states, action_rewards, done = self.env.step([action])
 
                 states.append(current_state)
                 actions.append(action)
+                policies.append(policy)
                 rewards.append(action_rewards[0])
                 next_states.append(new_states[0])
                 dones.append(done)
 
                 if not len(states) % self.agent.training_steps:
-                    self.agent.train(states, actions, rewards, next_states, dones)
-                    actions, states, rewards, next_states, dones = [], [], [], [], []
+                    self.agent.train(states, actions, policies, rewards, next_states, dones)
+                    states, actions, policies, rewards, next_states, dones = [], [], [], [], [], []
 
                 game_reward += action_rewards[0]
                 current_state = new_states[0]
@@ -151,7 +154,7 @@ class PPOAgentTrainer(AgentTrainer):
         self.env.stop()
 
 
-PPOAgentTrainer(DrAIve(1), "DrAIve-PPO-25Step", 25).run(2500)
+# PPOAgentTrainer(DrAIve(1), "DrAIve-PPO-25Step", 25).run(2500)
 PPOAgentTrainer(DrAIve(1), "DrAIve-PPO-50Step", 50).run(2500)
 PPOAgentTrainer(DrAIve(1), "DrAIve-PPO-100Step", 100).run(2500)
 PPOAgentTrainer(DrAIve(1), "DrAIve-PPO-250Step", 250).run(2500)

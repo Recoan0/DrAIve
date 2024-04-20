@@ -603,9 +603,7 @@ class ManualPlayer:
         game = DrAIve([Car(0, 0, 0, 0, None)])
         if make_track:
             game.generate_tracks(1)
-            game.reset(0)
-        else:
-            game.reset(1)
+        game.reset()
         done = False
         while not done:
             pressed = pygame.key.get_pressed()
